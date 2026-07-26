@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NeoGFF
+Comment=BioWare GFF editor
+Exec=NeoGFF %f
+Icon=neogff
+Terminal=false
+Categories=Utility;Development;
+MimeType=application/octet-stream;

@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '15 7 * * 1'
+  repository_dispatch:
+    types: [neoshared-updated]
+  workflow_dispatch:
+    inputs:
+      neoshared_ref:
+        description: NeoShared branch, tag, or commit SHA (blank uses main)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEOSHARED_REF: ${{ github.event.client_payload.neoshared_ref || inputs.neoshared_ref || 'main' }}
+
+jobs:
+  linux:
+    name: Linux (GCC + system wxWidgets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out NeoGFF
+        uses: actions/checkout@v7
+        with:
+          path: tool
+          persist-credentials: false
+
+      - name: Check out neoshared
+        uses: actions/checkout@v7
+        with:
+          repository: vrifftech/NeoShared
+          ref: ${{ env.NEOSHARED_REF }}
+          path: neoshared
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libwxgtk3.2-dev \
+            zlib1g-dev
+
+      - name: Configure and build
+        working-directory: tool
+        run: |
+          bash ./scripts/build.sh \
+            --build-dir build \
+            --build-type Release \
+            --wx ON \
+            --require-wx ON \
+            --cli ON \
+            --minimal-release OFF \
+            --generator Ninja \
+            --neoshared-root ../neoshared \
+            --no-vcpkg \
+            --jobs 2 \
+            --clean
+
+      - name: Run tests
+        run: ctest --test-dir tool/build -C Release --output-on-failure
+
+      - name: Stage install tree
+        run: cmake --install tool/build --config Release --prefix tool/stage
+
+      - name: Upload Linux artifact
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: NeoGFF-linux-${{ github.sha }}
+          path: tool/stage/
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows (Visual Studio 2026 + wxWidgets 3.3.3)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 120
+    env:
+      VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+
+    steps:
+      - name: Check out NeoGFF
+        uses: actions/checkout@v7
+        with:
+          path: tool
+          persist-credentials: false
+
+      - name: Check out neoshared
+        uses: actions/checkout@v7
+        with:
+          repository: vrifftech/NeoShared
+          ref: ${{ env.NEOSHARED_REF }}
+          path: neoshared
+          persist-credentials: false
+
+      - name: Enable vcpkg GitHub Actions cache
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install wxWidgets 3.3.3
+        shell: pwsh
+        run: |
+          $sharedRoot = Join-Path $env:GITHUB_WORKSPACE 'neoshared'
+          $installer = Join-Path $sharedRoot 'scripts\install-wxwidgets.ps1'
+          $overlayMetadata = Join-Path $sharedRoot 'vcpkg-ports\wxwidgets\vcpkg.json'
+
+          Write-Host "Requested NeoShared ref: $env:NEOSHARED_REF"
+          git -C $sharedRoot rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw "NeoShared was not checked out at $sharedRoot"
+          }
+
+          foreach ($requiredPath in @($installer, $overlayMetadata)) {
+            if (-not (Test-Path -LiteralPath $requiredPath)) {
+              Write-Host 'NeoShared checkout contents:'
+              Get-ChildItem -LiteralPath $sharedRoot -Force | Select-Object Name, FullName
+              throw "The selected NeoShared revision does not contain required build infrastructure: $requiredPath"
+            }
+          }
+
+          & $installer `
+            -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT `
+            -Triplet x64-windows-static `
+            -CleanAfterBuild
+
+      - name: Configure and build
+        working-directory: tool
+        shell: pwsh
+        run: |
+          .\scripts\build.ps1 `
+            -BuildDir build `
+            -BuildType Release `
+            -Wx ON `
+            -RequireWx ON `
+            -Cli ON `
+            -MinimalRelease OFF `
+            -Generator 'Visual Studio 18 2026' `
+            -Platform x64 `
+            -NeoSharedRoot ..\neoshared `
+            -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT `
+            -VcpkgTriplet x64-windows-static `
+            -Parallel 2 `
+            -Clean
+
+      - name: Run tests
+        shell: pwsh
+        run: ctest --test-dir tool/build -C Release --output-on-failure
+
+      - name: Stage install tree
+        shell: pwsh
+        run: cmake --install tool/build --config Release --prefix tool/stage
+
+      - name: Upload Windows artifact
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: NeoGFF-windows-vs2026-${{ github.sha }}
+          path: tool/stage/
+          if-no-files-found: error
+          retention-days: 14
