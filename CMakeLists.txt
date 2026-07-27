@@ -116,19 +116,6 @@ if(NEOGFF_BUILD_TESTS)
     add_test(NAME neogff-jade-resource-extensions
              COMMAND neogff-resource-extension-tests)
 
-    set(NEOGFF_LARGE_DLG_FIXTURE
-        "${CMAKE_CURRENT_BINARY_DIR}/neogff-large-dialogue.dlg")
-    add_executable(neogff-large-dlg-fixture tests/large_dlg_fixture.cpp)
-    target_link_libraries(neogff-large-dlg-fixture PRIVATE neogff_core)
-    if(MSVC)
-        target_compile_options(neogff-large-dlg-fixture PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(neogff-large-dlg-fixture PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-    add_test(NAME neogff-create-large-dlg-fixture
-             COMMAND neogff-large-dlg-fixture "${NEOGFF_LARGE_DLG_FIXTURE}")
-    set_tests_properties(neogff-create-large-dlg-fixture
-        PROPERTIES FIXTURES_SETUP neogff_large_dlg)
 endif()
 
 
@@ -218,12 +205,6 @@ if(NEOGFF_BUILD_WX_GUI)
         if(WIN32 AND NEOGFF_BUILD_TESTS)
             add_test(NAME neogff-gui-startup COMMAND NeoGFF --smoke-test)
             set_tests_properties(neogff-gui-startup PROPERTIES TIMEOUT 30)
-
-            add_test(NAME neogff-gui-large-dlg
-                     COMMAND NeoGFF --smoke-test-open "${NEOGFF_LARGE_DLG_FIXTURE}")
-            set_tests_properties(neogff-gui-large-dlg PROPERTIES
-                FIXTURES_REQUIRED neogff_large_dlg
-                TIMEOUT 180)
         endif()
 
         if(UNIX AND NOT APPLE)

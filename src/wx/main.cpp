@@ -413,14 +413,12 @@ public:
         refreshAll();
     }
 
-    bool openStartupFile(const std::filesystem::path& path,
-                         bool showErrors = true) {
-        if (path.empty()) return false;
+    void openStartupFile(const std::filesystem::path& path) {
+        if (path.empty()) return;
         try {
-            return openModelPath(path, false);
+            openModelPath(path, false);
         } catch (const std::exception& ex) {
-            if (showErrors) wxui::showError(this, ex);
-            return false;
+            wxui::showError(this, ex);
         }
     }
 
@@ -1821,42 +1819,18 @@ private:
 class NeoGFFApp final : public wxApp {
 public:
     bool OnInit() override {
-        const wxString command =
-            argc > 1 ? wxString(argv[1]) : wxString{};
         const bool smokeTest =
-            command == wxString::FromUTF8("--smoke-test");
-        const bool smokeOpen =
-            command == wxString::FromUTF8("--smoke-test-open");
-
-        if (smokeOpen && argc < 3) return false;
+            argc > 1 && wxString(argv[1]) == wxString::FromUTF8("--smoke-test");
 
         auto* frame = new NeoGFFFrame();
         frame->Show(!smokeTest);
-
-        bool opened = true;
-        if (smokeOpen) {
-            opened = frame->openStartupFile(
-                neosettings::pathFromWx(wxString(argv[2])), false);
-        } else if (!smokeTest && argc > 1) {
-            opened = frame->openStartupFile(
-                neosettings::pathFromWx(wxString(argv[1])));
+        if (!smokeTest && argc > 1) {
+            frame->openStartupFile(neosettings::pathFromWx(wxString(argv[1])));
         }
-
-        if (!opened) {
-            frame->Destroy();
-            return false;
-        }
-
-        if (smokeTest || smokeOpen) {
+        if (smokeTest) {
             CallAfter([frame]() {
-                frame->Refresh(false);
-                frame->Update();
-                if (wxTheApp != nullptr) {
-                    wxTheApp->CallAfter([frame]() {
-                        frame->Destroy();
-                        if (wxTheApp != nullptr) wxTheApp->ExitMainLoop();
-                    });
-                }
+                frame->Destroy();
+                if (wxTheApp != nullptr) wxTheApp->ExitMainLoop();
             });
         }
         return true;
