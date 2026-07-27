@@ -18,6 +18,7 @@
 #include <wx/sizer.h>
 #include <wx/treectrl.h>
 #include <wx/wx.h>
+#include <wx/wupdlock.h>
 
 #include <algorithm>
 #include <cctype>
@@ -25,14 +26,15 @@
 #include <exception>
 #include <fstream>
 #include <filesystem>
-#include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
-#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -411,12 +413,14 @@ public:
         refreshAll();
     }
 
-    void openStartupFile(const std::filesystem::path& path) {
-        if (path.empty()) return;
+    bool openStartupFile(const std::filesystem::path& path,
+                         bool showErrors = true) {
+        if (path.empty()) return false;
         try {
-            openModelPath(path, false);
+            return openModelPath(path, false);
         } catch (const std::exception& ex) {
-            wxui::showError(this, ex);
+            if (showErrors) wxui::showError(this, ex);
+            return false;
         }
     }
 
@@ -792,6 +796,7 @@ private:
         Bind(wxEVT_GRID_LABEL_RIGHT_CLICK, &NeoGFFFrame::onGridLabelRightClick, this, ID_Grid);
         Bind(wxEVT_TREE_SEL_CHANGED, &NeoGFFFrame::onTreeSelectionChanged, this, ID_ElementTree);
         Bind(wxEVT_TREE_ITEM_ACTIVATED, &NeoGFFFrame::onTreeActivated, this, ID_ElementTree);
+        Bind(wxEVT_TREE_ITEM_EXPANDING, &NeoGFFFrame::onTreeItemExpanding, this, ID_ElementTree);
         documentTabs_->Bind(wxEVT_AUINOTEBOOK_PAGE_CHANGED, &NeoGFFFrame::onDocumentTabChanged, this);
         documentTabs_->Bind(wxEVT_AUINOTEBOOK_PAGE_CLOSE, &NeoGFFFrame::onDocumentTabCloseRequested, this);
         Bind(wxEVT_CLOSE_WINDOW, &NeoGFFFrame::onClose, this);
@@ -830,7 +835,10 @@ private:
         viewState().resetForNewDocument();
         viewState().preferredViewMode = preferredView;
         viewState().selectedLogicalRow = -1;
-        setFilterTerm({});
+        viewState().filterTerm.clear();
+        if (filterText_ != nullptr && !filterText_->GetValue().empty()) {
+            filterText_->ChangeValue(wxString{});
+        }
         tryLoadResolvedTlkForPath(path);
         rememberRecentFile(path);
         neogames::resolver().inferFromOpenedPath(path);
@@ -878,7 +886,10 @@ private:
             viewState().resetForNewDocument();
             viewState().preferredViewMode = preferredView;
             viewState().selectedLogicalRow = -1;
-            setFilterTerm({});
+            viewState().filterTerm.clear();
+            if (filterText_ != nullptr && !filterText_->GetValue().empty()) {
+                filterText_->ChangeValue(wxString{});
+            }
             refreshAll();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
@@ -1067,6 +1078,9 @@ private:
         if (viewSizer_) viewSizer_->Layout();
         if (viewPanel_) viewPanel_->Layout();
         Layout();
+        if (persist && hasActiveDocument()) {
+            refreshActiveView();
+        }
     }
 
     void onExpandTree(wxCommandEvent&) {
@@ -1452,70 +1466,110 @@ private:
         event.Skip();
     }
 
+    void materializeTreeChildren(const wxTreeItemId& parentItem,
+                                 const std::string& parentPath) {
+        if (!tree_ || !parentItem.IsOk()) return;
+        if (!treeMaterializedPaths_.insert(parentPath).second) return;
+
+        const auto children = treeChildrenByParent_.find(parentPath);
+        if (children == treeChildrenByParent_.end()) return;
+
+        for (const std::size_t rowIndex : children->second) {
+            if (rowIndex >= displayRows_.size()) continue;
+            const auto& row = displayRows_[rowIndex];
+            const wxTreeItemId item = tree_->AppendItem(
+                parentItem,
+                wxui::toWx(treeTextForRow(row)),
+                -1,
+                -1,
+                new GffTreeItemData(row.path, static_cast<int>(rowIndex)));
+            treeRowItems_[rowIndex] = item;
+
+            const auto grandchildren = treeChildrenByParent_.find(row.path);
+            if (grandchildren != treeChildrenByParent_.end() &&
+                !grandchildren->second.empty()) {
+                tree_->SetItemHasChildren(item, true);
+            }
+        }
+    }
+
+    void onTreeItemExpanding(wxTreeEvent& event) {
+        if (!tree_) {
+            event.Skip();
+            return;
+        }
+        const wxTreeItemId item = event.GetItem();
+        if (!item.IsOk()) {
+            event.Skip();
+            return;
+        }
+
+        std::string path;
+        if (auto* data = dynamic_cast<GffTreeItemData*>(tree_->GetItemData(item))) {
+            path = data->path();
+        }
+        materializeTreeChildren(item, path);
+        event.Skip();
+    }
+
     void refreshTree() {
         if (!tree_) return;
 
+        wxWindowUpdateLocker updateLocker(tree_);
         viewState().selectedLogicalRow = -1;
         viewState().selectedPath.clear();
         treeRowItems_.assign(displayRows_.size(), wxTreeItemId{});
+        treeChildrenByParent_.clear();
+        treeMaterializedPaths_.clear();
         tree_->DeleteAllItems();
 
         const std::string rootText = model().loaded()
             ? (pathText(model().filename()).empty() ? std::string("New GFF File") : pathText(model().filename()))
             : std::string("No GFF loaded");
-        const wxTreeItemId root = tree_->AddRoot(wxui::toWx(rootText), -1, -1, new GffTreeItemData(std::string{}, -1));
+        const wxTreeItemId root = tree_->AddRoot(
+            wxui::toWx(rootText), -1, -1, new GffTreeItemData(std::string{}, -1));
 
-        if (!model().loaded()) {
+        if (!model().loaded() || displayRows_.empty()) {
             tree_->Expand(root);
             return;
         }
 
-        std::map<std::string, wxTreeItemId> pathToItem;
-        pathToItem[std::string{}] = root;
-
-        std::function<wxTreeItemId(const std::string&)> ensureItem = [&](const std::string& path) -> wxTreeItemId {
-            if (path.empty()) return root;
-            const auto found = pathToItem.find(path);
-            if (found != pathToItem.end()) return found->second;
-            const wxTreeItemId parent = ensureItem(treeParentPathOf(path));
-            const wxTreeItemId item = tree_->AppendItem(parent, wxui::toWx(pathLeaf(path)), -1, -1,
-                                                        new GffTreeItemData(path, -1));
-            pathToItem[path] = item;
-            return item;
-        };
-
+        std::unordered_map<std::string, std::size_t> visibleRowsByPath;
+        visibleRowsByPath.reserve(displayRows_.size());
         for (std::size_t i = 0; i < displayRows_.size(); ++i) {
-            const auto& row = displayRows_[i];
-            const std::string parentPath = treeParentPathOf(row.path);
-            const wxTreeItemId parent = ensureItem(parentPath);
-
-            wxTreeItemId item;
-            const auto found = pathToItem.find(row.path);
-            if (found != pathToItem.end() && found->second != root) {
-                item = found->second;
-                tree_->SetItemText(item, wxui::toWx(treeTextForRow(row)));
-                if (auto* data = dynamic_cast<GffTreeItemData*>(tree_->GetItemData(item))) {
-                    data->setRowIndex(static_cast<int>(i));
-                } else {
-                    tree_->SetItemData(item, new GffTreeItemData(row.path, static_cast<int>(i)));
-                }
-            } else {
-                item = tree_->AppendItem(parent, wxui::toWx(treeTextForRow(row)), -1, -1,
-                                         new GffTreeItemData(row.path, static_cast<int>(i)));
-                pathToItem[row.path] = item;
-            }
-            treeRowItems_[i] = item;
+            visibleRowsByPath.emplace(displayRows_[i].path, i);
         }
 
+        for (std::size_t i = 0; i < displayRows_.size(); ++i) {
+            std::string parentPath = treeParentPathOf(displayRows_[i].path);
+            while (!parentPath.empty() &&
+                   visibleRowsByPath.find(parentPath) == visibleRowsByPath.end()) {
+                parentPath = treeParentPathOf(parentPath);
+            }
+            treeChildrenByParent_[parentPath].push_back(i);
+        }
+
+        materializeTreeChildren(root, std::string{});
         tree_->Expand(root);
-        if (isTreeView(viewMode()) && !displayRows_.empty() && treeRowItems_[0].IsOk()) {
-            tree_->SelectItem(treeRowItems_[0]);
+
+        const auto rootRows = treeChildrenByParent_.find(std::string{});
+        if (rootRows != treeChildrenByParent_.end() && !rootRows->second.empty()) {
+            const std::size_t firstRow = rootRows->second.front();
+            if (firstRow < treeRowItems_.size() && treeRowItems_[firstRow].IsOk()) {
+                tree_->SelectItem(treeRowItems_[firstRow]);
+            }
         }
     }
 
     void expandTreeRecursive(const wxTreeItemId& item) {
         if (!tree_ || !item.IsOk()) return;
+        std::string path;
+        if (auto* data = dynamic_cast<GffTreeItemData*>(tree_->GetItemData(item))) {
+            path = data->path();
+        }
+        materializeTreeChildren(item, path);
         tree_->Expand(item);
+
         wxTreeItemIdValue cookie;
         wxTreeItemId child = tree_->GetFirstChild(item, cookie);
         while (child.IsOk()) {
@@ -1535,16 +1589,6 @@ private:
         tree_->Collapse(item);
     }
 
-    bool gffRowPassesCurrentFilters(const neotabular::Table& table, std::size_t row) const {
-        if (row >= table.rows.size()) return false;
-        if (!viewState().filterTerm.empty() && !neotabular::rowMatches(table, table.rows[row], viewState().filterTerm)) {
-            return false;
-        }
-        return neoview::rowPassesColumnFilters(viewState(), [&](std::size_t logicalColumn) {
-            return logicalColumn < table.rows[row].size() ? table.rows[row][logicalColumn] : std::string();
-        });
-    }
-
     std::string gffCellText(const GffFieldRow& row, std::size_t logicalColumn) const {
         switch (logicalColumn) {
         case kColPath: return row.path;
@@ -1557,59 +1601,154 @@ private:
         }
     }
 
-    void refreshAll() {
-        displayRows_.clear();
-        const auto modelRows = model().rows();
-        neoview::removeColumnFiltersOutsideRange(viewState(), kColumnCount);
-        std::vector<std::size_t> visibleLogicalRows;
-        visibleLogicalRows.reserve(modelRows.size());
-        if (model().loaded()) {
-            const auto table = model().toTable();
-            for (std::size_t i = 0; i < modelRows.size(); ++i) {
-                if (gffRowPassesCurrentFilters(table, i)) {
-                    displayRows_.push_back(modelRows[i]);
-                    visibleLogicalRows.push_back(i);
+    bool gffRowPassesCurrentFilters(const GffFieldRow& row) const {
+        if (!viewState().filterTerm.empty()) {
+            bool matches = false;
+            for (std::size_t column = 0; column < kColumnCount; ++column) {
+                if (neoview::containsInsensitive(
+                        gffCellText(row, column),
+                        viewState().filterTerm)) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (!matches) return false;
+        }
+
+        return neoview::rowPassesColumnFilters(
+            viewState(),
+            [&](std::size_t logicalColumn) {
+                return gffCellText(row, logicalColumn);
+            });
+    }
+
+    void refreshGrid() {
+        if (!grid_) return;
+        if (displayRows_.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("This GFF contains too many fields for the grid view.");
+        }
+
+        {
+            wxGridUpdateLocker updateLocker(grid_);
+            grid_->DisableCellEditControl();
+            grid_->ClearSelection();
+
+            const int currentRows = grid_->GetNumberRows();
+            if (currentRows > 0) grid_->DeleteRows(0, currentRows);
+            if (!displayRows_.empty()) {
+                grid_->AppendRows(static_cast<int>(displayRows_.size()));
+            }
+
+            const int wantedCols =
+                static_cast<int>(viewState().visualToLogicalColumns.size());
+            std::vector<std::size_t> logicalColumns;
+            logicalColumns.reserve(static_cast<std::size_t>(wantedCols));
+            for (int visualCol = 0; visualCol < wantedCols; ++visualCol) {
+                const std::size_t logicalColumn =
+                    actualColumnForVisible(visualCol);
+                logicalColumns.push_back(logicalColumn);
+
+                std::string label = gffColumnLabel(logicalColumn);
+                if (neoview::findColumnFilter(viewState(), logicalColumn) !=
+                    nullptr) {
+                    label += " *";
+                }
+                grid_->SetColLabelValue(visualCol, wxui::toWx(label));
+
+                auto* columnAttr = new wxGridCellAttr();
+                columnAttr->SetReadOnly(logicalColumn != kColValue);
+                grid_->SetColAttr(visualCol, columnAttr);
+            }
+
+            for (std::size_t i = 0; i < displayRows_.size(); ++i) {
+                const int gridRow = static_cast<int>(i);
+                const auto& row = displayRows_[i];
+                for (int visualCol = 0; visualCol < wantedCols; ++visualCol) {
+                    const std::size_t logicalColumn =
+                        logicalColumns[static_cast<std::size_t>(visualCol)];
+                    grid_->SetCellValue(
+                        gridRow,
+                        visualCol,
+                        wxui::toWx(gffCellText(row, logicalColumn)));
+                    if (logicalColumn == kColValue && !row.editable) {
+                        grid_->SetReadOnly(gridRow, visualCol, true);
+                    }
                 }
             }
         }
-        neoview::setRowsFromLogicalRows(viewState(), std::move(visibleLogicalRows));
-        neoview::ensureIdentityColumns(viewState(), kColumnCount);
-        filePath_->SetValue(wxui::toWx(pathText(model().filename())));
-        typeText_->SetValue(wxui::toWx(typeVersionText(model())));
-        if (tlkPath_) tlkPath_->SetValue(wxui::toWx(model().tlk().loaded() ? pathText(model().tlk().filename()) : std::string{}));
-        SetTitle(wxui::toWx("NeoGFF v1.0.0" + std::string(model().dirty() ? " *" : "") + " (GFF editor)"));
-        updateActiveTabTitle();
 
-        if (grid_->GetNumberRows() > 0) grid_->DeleteRows(0, grid_->GetNumberRows());
-        if (!displayRows_.empty()) grid_->AppendRows(static_cast<int>(displayRows_.size()));
-        const int wantedCols = static_cast<int>(viewState().visualToLogicalColumns.size());
-        for (int visualCol = 0; visualCol < wantedCols; ++visualCol) {
-            const std::size_t logicalColumn = actualColumnForVisible(visualCol);
-            std::string label = gffColumnLabel(logicalColumn);
-            if (neoview::findColumnFilter(viewState(), logicalColumn) != nullptr) label += " *";
-            grid_->SetColLabelValue(visualCol, wxui::toWx(label));
+        grid_->ForceRefresh();
+    }
+
+    void refreshActiveView() {
+        if (isTreeView(viewMode())) {
+            refreshTree();
+        } else {
+            refreshGrid();
         }
-        for (std::size_t i = 0; i < displayRows_.size(); ++i) {
-            const int r = static_cast<int>(i);
-            const auto& row = displayRows_[i];
-            for (int visualCol = 0; visualCol < wantedCols; ++visualCol) {
-                const std::size_t logicalColumn = actualColumnForVisible(visualCol);
-                grid_->SetCellValue(r, visualCol, wxui::toWx(gffCellText(row, logicalColumn)));
-                grid_->SetReadOnly(r, visualCol, !(logicalColumn == kColValue && row.editable));
+    }
+
+    void refreshAll() {
+        std::vector<GffFieldRow> modelRows;
+        if (model().loaded()) modelRows = model().rows();
+        const std::size_t totalRows = modelRows.size();
+
+        displayRows_.clear();
+        displayRows_.reserve(modelRows.size());
+        neoview::removeColumnFiltersOutsideRange(viewState(), kColumnCount);
+
+        std::vector<std::size_t> visibleLogicalRows;
+        visibleLogicalRows.reserve(modelRows.size());
+        for (std::size_t i = 0; i < modelRows.size(); ++i) {
+            if (gffRowPassesCurrentFilters(modelRows[i])) {
+                displayRows_.push_back(std::move(modelRows[i]));
+                visibleLogicalRows.push_back(i);
             }
         }
-        const int editableVisualCol = neoview::visualColumnForLogical(viewState(), kColEditable);
-        if (editableVisualCol >= 0) grid_->AutoSizeColumn(editableVisualCol, false);
-        refreshTree();
-        applyDarkMode();
+
+        neoview::setRowsFromLogicalRows(
+            viewState(), std::move(visibleLogicalRows));
+        neoview::ensureIdentityColumns(viewState(), kColumnCount);
+
+        filePath_->ChangeValue(wxui::toWx(pathText(model().filename())));
+        typeText_->ChangeValue(wxui::toWx(typeVersionText(model())));
+        if (tlkPath_) {
+            tlkPath_->ChangeValue(wxui::toWx(
+                model().tlk().loaded()
+                    ? pathText(model().tlk().filename())
+                    : std::string{}));
+        }
+
+        SetTitle(wxui::toWx(
+            "NeoGFF v1.0.0" +
+            std::string(model().dirty() ? " *" : "") +
+            " (GFF editor)"));
+        updateActiveTabTitle();
+
+        refreshActiveView();
+
         if (GetStatusBar()) {
-            wxui::setStatusText(*this, wxui::toWx(model().loaded() ? pathText(model().filename()) : std::string("No GFF loaded")), 0);
-            const auto totalRows = model().loaded() ? model().rows().size() : 0u;
-            std::string detail = std::to_string(displayRows_.size()) + "/" + std::to_string(totalRows) + " rows";
-            const std::string columnFilters = neoview::columnFilterSummary(viewState());
+            wxui::setStatusText(
+                *this,
+                wxui::toWx(
+                    model().loaded()
+                        ? pathText(model().filename())
+                        : std::string("No GFF loaded")),
+                0);
+            std::string detail =
+                std::to_string(displayRows_.size()) + "/" +
+                std::to_string(totalRows) + " rows";
+            const std::string columnFilters =
+                neoview::columnFilterSummary(viewState());
             if (!columnFilters.empty()) detail += "; filters: " + columnFilters;
-            if (model().tlk().loaded()) detail += "; TLK " + std::to_string(model().tlk().count()) + " entries";
-            else if (!tlkAutoLoadWarning().empty()) detail += "; " + tlkAutoLoadWarning();
+            if (model().tlk().loaded()) {
+                detail += "; TLK " +
+                          std::to_string(model().tlk().count()) +
+                          " entries";
+            } else if (!tlkAutoLoadWarning().empty()) {
+                detail += "; " + tlkAutoLoadWarning();
+            }
             wxui::setStatusText(*this, wxui::toWx(detail), 1);
         }
     }
@@ -1619,8 +1758,6 @@ private:
         if (flatGridViewItem_) flatGridViewItem_->Check(viewMode() == GffViewMode::FlatGrid);
         if (elementTreeViewItem_) elementTreeViewItem_->Check(viewMode() == GffViewMode::ElementTree);
         wxui::applyTheme(this, darkMode_);
-        if (grid_) wxui::applyGridTheme(*grid_, darkMode_);
-        if (tree_) wxui::applyTreeTheme(*tree_, darkMode_);
         applyFontScale();
     }
 
@@ -1670,6 +1807,8 @@ private:
     int contextVisualColumn_ = -1;
     wxTreeCtrl* tree_ = nullptr;
     std::vector<wxTreeItemId> treeRowItems_;
+    std::unordered_map<std::string, std::vector<std::size_t>> treeChildrenByParent_;
+    std::unordered_set<std::string> treeMaterializedPaths_;
     wxMenuItem* flatGridViewItem_ = nullptr;
     wxMenuItem* elementTreeViewItem_ = nullptr;
     wxMenuItem* darkModeItem_ = nullptr;
@@ -1682,18 +1821,42 @@ private:
 class NeoGFFApp final : public wxApp {
 public:
     bool OnInit() override {
+        const wxString command =
+            argc > 1 ? wxString(argv[1]) : wxString{};
         const bool smokeTest =
-            argc > 1 && wxString(argv[1]) == wxString::FromUTF8("--smoke-test");
+            command == wxString::FromUTF8("--smoke-test");
+        const bool smokeOpen =
+            command == wxString::FromUTF8("--smoke-test-open");
+
+        if (smokeOpen && argc < 3) return false;
 
         auto* frame = new NeoGFFFrame();
         frame->Show(!smokeTest);
-        if (!smokeTest && argc > 1) {
-            frame->openStartupFile(neosettings::pathFromWx(wxString(argv[1])));
+
+        bool opened = true;
+        if (smokeOpen) {
+            opened = frame->openStartupFile(
+                neosettings::pathFromWx(wxString(argv[2])), false);
+        } else if (!smokeTest && argc > 1) {
+            opened = frame->openStartupFile(
+                neosettings::pathFromWx(wxString(argv[1])));
         }
-        if (smokeTest) {
+
+        if (!opened) {
+            frame->Destroy();
+            return false;
+        }
+
+        if (smokeTest || smokeOpen) {
             CallAfter([frame]() {
-                frame->Destroy();
-                if (wxTheApp != nullptr) wxTheApp->ExitMainLoop();
+                frame->Refresh(false);
+                frame->Update();
+                if (wxTheApp != nullptr) {
+                    wxTheApp->CallAfter([frame]() {
+                        frame->Destroy();
+                        if (wxTheApp != nullptr) wxTheApp->ExitMainLoop();
+                    });
+                }
             });
         }
         return true;
