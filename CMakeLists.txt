@@ -201,6 +201,11 @@ if(NEOGFF_BUILD_WX_GUI)
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         )
 
+        if(WIN32 AND NEOGFF_BUILD_TESTS)
+            add_test(NAME neogff-gui-startup COMMAND NeoGFF --smoke-test)
+            set_tests_properties(neogff-gui-startup PROPERTIES TIMEOUT 30)
+        endif()
+
         if(UNIX AND NOT APPLE)
             foreach(NEO_ICON_SIZE 16 24 32 48 64 128 256)
                 install(FILES resources/icons/${NEO_ICON_SIZE}x${NEO_ICON_SIZE}/neogff.png

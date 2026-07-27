@@ -1050,13 +1050,20 @@ private:
     }
 
     void setViewMode(GffViewMode mode, bool persist) {
+        // buildWindow() selects the initial view before the first document tab
+        // exists. Keep that choice in pendingViewMode_ until createDocumentTab()
+        // creates a per-document view state; never index the empty document
+        // vector during frame construction.
         viewMode() = mode;
-        viewState().preferredViewMode = viewMode() == GffViewMode::ElementTree ? "ElementTree" : "FlatGrid";
-        if (persist) writePreferredViewMode(viewMode());
-        if (flatGridViewItem_) flatGridViewItem_->Check(viewMode() == GffViewMode::FlatGrid);
-        if (elementTreeViewItem_) elementTreeViewItem_->Check(viewMode() == GffViewMode::ElementTree);
-        if (grid_) grid_->Show(viewMode() == GffViewMode::FlatGrid);
-        if (tree_) tree_->Show(viewMode() == GffViewMode::ElementTree);
+        if (hasActiveDocument()) {
+            viewState().preferredViewMode =
+                mode == GffViewMode::ElementTree ? "ElementTree" : "FlatGrid";
+        }
+        if (persist) writePreferredViewMode(mode);
+        if (flatGridViewItem_) flatGridViewItem_->Check(mode == GffViewMode::FlatGrid);
+        if (elementTreeViewItem_) elementTreeViewItem_->Check(mode == GffViewMode::ElementTree);
+        if (grid_) grid_->Show(mode == GffViewMode::FlatGrid);
+        if (tree_) tree_->Show(mode == GffViewMode::ElementTree);
         if (viewSizer_) viewSizer_->Layout();
         if (viewPanel_) viewPanel_->Layout();
         Layout();
@@ -1675,10 +1682,19 @@ private:
 class NeoGFFApp final : public wxApp {
 public:
     bool OnInit() override {
+        const bool smokeTest =
+            argc > 1 && wxString(argv[1]) == wxString::FromUTF8("--smoke-test");
+
         auto* frame = new NeoGFFFrame();
-        frame->Show(true);
-        if (argc > 1) {
-            frame->openStartupFile(std::filesystem::path(wxui::toStd(argv[1])));
+        frame->Show(!smokeTest);
+        if (!smokeTest && argc > 1) {
+            frame->openStartupFile(neosettings::pathFromWx(wxString(argv[1])));
+        }
+        if (smokeTest) {
+            CallAfter([frame]() {
+                frame->Destroy();
+                if (wxTheApp != nullptr) wxTheApp->ExitMainLoop();
+            });
         }
         return true;
     }
