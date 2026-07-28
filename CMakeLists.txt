@@ -178,6 +178,11 @@ if(NEOGFF_BUILD_WX_GUI)
         set(NEOGFF_WX_SOURCES src/wx/main.cpp)
         if(WIN32)
             list(APPEND NEOGFF_WX_SOURCES resources/neogff.rc)
+        elseif(APPLE)
+            list(APPEND NEOGFF_WX_SOURCES resources/neogff.icns)
+            set_source_files_properties(resources/neogff.icns PROPERTIES
+                MACOSX_PACKAGE_LOCATION "Resources"
+            )
         endif()
 
         if(WIN32)
@@ -187,6 +192,12 @@ if(NEOGFF_BUILD_WX_GUI)
         else()
             add_executable(NeoGFF ${NEOGFF_WX_SOURCES})
         endif()
+        if(APPLE)
+            set_target_properties(NeoGFF PROPERTIES
+                MACOSX_BUNDLE_ICON_FILE neogff.icns
+            )
+        endif()
+
         target_link_libraries(NeoGFF PRIVATE neogff_core)
         target_include_directories(NeoGFF PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
         target_link_libraries(NeoGFF PRIVATE neoshared::wx)
@@ -208,12 +219,16 @@ if(NEOGFF_BUILD_WX_GUI)
         endif()
 
         if(UNIX AND NOT APPLE)
-            foreach(NEO_ICON_SIZE 16 24 32 48 64 128 256)
+            foreach(NEO_ICON_SIZE 16 24 32 48 64 128 256 512)
                 install(FILES resources/icons/${NEO_ICON_SIZE}x${NEO_ICON_SIZE}/neogff.png
                     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/${NEO_ICON_SIZE}x${NEO_ICON_SIZE}/apps
                     RENAME neogff.png
                 )
             endforeach()
+            install(FILES resources/neogff.svg
+                DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
+                RENAME neogff.svg
+            )
             configure_file(resources/neogff.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/neogff.desktop @ONLY)
             install(FILES ${CMAKE_CURRENT_BINARY_DIR}/neogff.desktop
                 DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications

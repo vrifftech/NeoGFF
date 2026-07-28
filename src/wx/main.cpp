@@ -12,7 +12,6 @@
 #include <wx/aui/auibook.h>
 #include <wx/choice.h>
 #include <wx/clipbrd.h>
-#include <wx/grid.h>
 #include <wx/icon.h>
 #include <wx/iconbndl.h>
 #include <wx/sizer.h>
@@ -154,11 +153,6 @@ constexpr int kColValue = 4;
 constexpr int kColResolved = 5;
 constexpr int kColumnCount = 6;
 
-std::string gffColumnLabel(std::size_t column) {
-    static const std::vector<std::string> labels = {"Path", "Label", "Type", "Editable", "Value", "Resolved"};
-    return column < labels.size() ? labels[column] : ("Column " + std::to_string(column));
-}
-
 enum : int {
     ID_New = wxID_HIGHEST + 1,
     ID_Open,
@@ -177,58 +171,24 @@ enum : int {
     ID_PasteCells,
     ID_Filter,
     ID_ClearFilter,
-    ID_FilterColumn,
-    ID_ClearColumnFilter,
     ID_ClearAllFilters,
-    ID_MoveColumnLeft,
-    ID_MoveColumnRight,
-    ID_ResetColumnOrder,
-    ID_ResetRowOrder,
     ID_ImportXml,
     ID_ImportJson,
     ID_ExportXml,
     ID_ExportJson,
     ID_ExportPatcherPackage,
     ID_ExportPatcherFragment,
-    ID_ViewFlatGrid,
-    ID_ViewElementTree,
     ID_ExpandTree,
     ID_CollapseTree,
     ID_DarkMode,
     ID_FontIncrease,
     ID_FontDecrease,
     ID_FontReset,
-    ID_Grid,
     ID_ElementTree
 };
 
 constexpr int kRecentFileBaseId = wxID_HIGHEST + 1000;
 constexpr int kClearRecentFilesId = kRecentFileBaseId + neosettings::kMaxRecentFiles;
-
-enum class GffViewMode {
-    FlatGrid,
-    ElementTree
-};
-
-std::string viewModeConfigValue(GffViewMode mode) {
-    return mode == GffViewMode::ElementTree ? std::string("tree") : std::string("grid");
-}
-
-GffViewMode readPreferredViewMode() {
-    const std::string text = neosettings::AppSettings(kAppName).preferredView();
-    if (text == "tree" || text == "element-tree" || text == "ElementTree") {
-        return GffViewMode::ElementTree;
-    }
-    return GffViewMode::FlatGrid;
-}
-
-void writePreferredViewMode(GffViewMode mode) {
-    neosettings::AppSettings(kAppName).setPreferredView(viewModeConfigValue(mode));
-}
-
-bool isTreeView(GffViewMode mode) {
-    return mode == GffViewMode::ElementTree;
-}
 
 std::string pathText(const std::filesystem::path& path) {
     return path.empty() ? std::string{} : path.string();
@@ -395,7 +355,6 @@ class NeoGFFFrame final : public wxFrame {
 public:
     NeoGFFFrame()
         : wxFrame(nullptr, wxID_ANY, "NeoGFF v1.0.0 (GFF editor)", wxDefaultPosition, wxDefaultSize) {
-        pendingViewMode_ = readPreferredViewMode();
         setApplicationIcon();
         buildMenus();
         buildWindow();
@@ -427,7 +386,6 @@ private:
     struct DocumentTab {
         std::unique_ptr<GffModel> model = std::make_unique<GffModel>();
         neoview::DocumentViewState viewState;
-        GffViewMode viewMode = GffViewMode::FlatGrid;
         std::string tlkAutoLoadWarning;
         std::string untitledName = "Untitled GFF";
         wxWindow* tabPage = nullptr;
@@ -443,8 +401,6 @@ private:
     const GffModel& model() const { return *activeDocument().model; }
     neoview::DocumentViewState& viewState() { return activeDocument().viewState; }
     const neoview::DocumentViewState& viewState() const { return activeDocument().viewState; }
-    GffViewMode& viewMode() { return hasActiveDocument() ? activeDocument().viewMode : pendingViewMode_; }
-    const GffViewMode& viewMode() const { return hasActiveDocument() ? activeDocument().viewMode : pendingViewMode_; }
     std::string& tlkAutoLoadWarning() { return activeDocument().tlkAutoLoadWarning; }
     const std::string& tlkAutoLoadWarning() const { return activeDocument().tlkAutoLoadWarning; }
 
@@ -466,16 +422,14 @@ private:
         tabSwitchInProgress_ = false;
         if (!selected) return;
         activeDocumentIndex_ = index;
-        setViewMode(viewMode(), false);
         refreshAll();
     }
 
     void createDocumentTab(bool select = true) {
         DocumentTab tab;
         tab.model = std::make_unique<GffModel>();
-        tab.viewMode = pendingViewMode_;
         tab.viewState.resetForNewDocument();
-        tab.viewState.preferredViewMode = tab.viewMode == GffViewMode::ElementTree ? "ElementTree" : "FlatGrid";
+        tab.viewState.preferredViewMode = "ElementTree";
         tab.viewState.selectedLogicalRow = -1;
         const std::size_t previousActiveIndex = activeDocumentIndex_;
         documents_.push_back(std::move(tab));
@@ -498,7 +452,6 @@ private:
             tabSwitchInProgress_ = true;
             neotabs::changeSelectionToPage(documentTabs_, page);
             tabSwitchInProgress_ = false;
-            setViewMode(viewMode(), false);
             refreshAll();
         }
     }
@@ -614,34 +567,24 @@ private:
         exportMenu->Append(ID_ExportPatcherFragment, "Export TSL/HoloPatcher &Fragment...");
 
         auto* edit = new wxMenu;
-        edit->Append(ID_CopyCells, "&Copy Cells	Ctrl-C");
-        edit->Append(ID_PasteCells, "&Paste Cells	Ctrl-V");
+        edit->Append(ID_CopyCells, "&Copy Selected Value	Ctrl-C");
+        edit->Append(ID_PasteCells, "&Paste Selected Value	Ctrl-V");
         edit->AppendSeparator();
         edit->Append(ID_Filter, "&Filter/Search...	Ctrl-F");
-        edit->Append(ID_FilterColumn, "Filter Selected &Column...");
-        edit->Append(ID_ClearColumnFilter, "Clear Filter on Selected Column");
-        edit->Append(ID_ClearAllFilters, "Clear &All Filters");
+        edit->Append(ID_ClearAllFilters, "Clear &Filter");
         edit->AppendSeparator();
         edit->Append(ID_AddField, "&Add Field...");
         edit->Append(ID_DeleteField, "&Delete Selected Field");
 
         auto* view = new wxMenu;
-        flatGridViewItem_ = view->AppendRadioItem(ID_ViewFlatGrid, "Flat &Grid View");
-        elementTreeViewItem_ = view->AppendRadioItem(ID_ViewElementTree, "&Element Tree View");
-        view->AppendSeparator();
-        view->Append(ID_ExpandTree, "E&xpand Element Tree");
-        view->Append(ID_CollapseTree, "&Collapse Element Tree");
+        view->Append(ID_ExpandTree, "E&xpand GFF Tree");
+        view->Append(ID_CollapseTree, "&Collapse GFF Tree");
         view->AppendSeparator();
         darkModeItem_ = view->AppendCheckItem(ID_DarkMode, "&Dark Mode");
         view->AppendSeparator();
-        view->Append(ID_FontIncrease, "Increase Font Size\tCtrl++");
-        view->Append(ID_FontDecrease, "Decrease Font Size\tCtrl+-");
-        view->Append(ID_FontReset, "Reset Font Size\tCtrl+0");
-        view->AppendSeparator();
-        view->Append(ID_MoveColumnLeft, "Move Selected Column Left");
-        view->Append(ID_MoveColumnRight, "Move Selected Column Right");
-        view->Append(ID_ResetColumnOrder, "Reset Column Order");
-        view->Append(ID_ResetRowOrder, "Reset Row Order");
+        view->Append(ID_FontIncrease, "Increase Font Size	Ctrl++");
+        view->Append(ID_FontDecrease, "Decrease Font Size	Ctrl+-");
+        view->Append(ID_FontReset, "Reset Font Size	Ctrl+0");
 
         auto* help = new wxMenu;
         help->Append(wxID_ABOUT, "&About");
@@ -673,21 +616,13 @@ private:
         Bind(wxEVT_MENU, &NeoGFFFrame::onPasteCells, this, ID_PasteCells);
         Bind(wxEVT_MENU, &NeoGFFFrame::onFilterPrompt, this, ID_Filter);
         Bind(wxEVT_MENU, &NeoGFFFrame::onClearFilter, this, ID_ClearFilter);
-        Bind(wxEVT_MENU, &NeoGFFFrame::onFilterSelectedColumn, this, ID_FilterColumn);
-        Bind(wxEVT_MENU, &NeoGFFFrame::onClearSelectedColumnFilter, this, ID_ClearColumnFilter);
         Bind(wxEVT_MENU, &NeoGFFFrame::onClearAllFilters, this, ID_ClearAllFilters);
-        Bind(wxEVT_MENU, &NeoGFFFrame::onMoveColumnLeft, this, ID_MoveColumnLeft);
-        Bind(wxEVT_MENU, &NeoGFFFrame::onMoveColumnRight, this, ID_MoveColumnRight);
-        Bind(wxEVT_MENU, &NeoGFFFrame::onResetColumnOrder, this, ID_ResetColumnOrder);
-        Bind(wxEVT_MENU, &NeoGFFFrame::onResetRowOrder, this, ID_ResetRowOrder);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onImport(neotabular::Format::Xml); }, ID_ImportXml);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onImport(neotabular::Format::Json); }, ID_ImportJson);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExport(neotabular::Format::Xml); }, ID_ExportXml);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExport(neotabular::Format::Json); }, ID_ExportJson);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExportPatcher(true); }, ID_ExportPatcherPackage);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExportPatcher(false); }, ID_ExportPatcherFragment);
-        Bind(wxEVT_MENU, [this](wxCommandEvent&) { setViewMode(GffViewMode::FlatGrid, true); }, ID_ViewFlatGrid);
-        Bind(wxEVT_MENU, [this](wxCommandEvent&) { setViewMode(GffViewMode::ElementTree, true); }, ID_ViewElementTree);
         Bind(wxEVT_MENU, &NeoGFFFrame::onExpandTree, this, ID_ExpandTree);
         Bind(wxEVT_MENU, &NeoGFFFrame::onCollapseTree, this, ID_CollapseTree);
         Bind(wxEVT_MENU, &NeoGFFFrame::onToggleDarkMode, this, ID_DarkMode);
@@ -696,7 +631,7 @@ private:
         Bind(wxEVT_MENU, &NeoGFFFrame::onResetFontScale, this, ID_FontReset);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { Close(); }, wxID_EXIT);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) {
-            wxui::showMessage(this, "About NeoGFF", "NeoGFF v1.0.0\nNative wxWidgets BioWare GFF editor\n\nA special thanks to everyone in the KOTOR modding community that has contributed their work, knowledge, and creativity to making tools, mods, and guides over the last 20+ years");
+            wxui::showMessage(this, "About NeoGFF", "NeoGFF v1.0.0\nNative wxWidgets BioWare GFF tree editor\n\nA special thanks to everyone in the KOTOR modding community that has contributed their work, knowledge, and creativity to making tools, mods, and guides over the last 20+ years");
         }, wxID_ABOUT);
         Bind(wxEVT_BUTTON, &NeoGFFFrame::onNew, this, ID_New);
         Bind(wxEVT_BUTTON, &NeoGFFFrame::onOpen, this, ID_Open);
@@ -762,36 +697,15 @@ private:
         viewPanel_ = new wxPanel(panel);
         viewSizer_ = new wxBoxSizer(wxVERTICAL);
 
-        grid_ = new wxGrid(viewPanel_, ID_Grid);
-        grid_->CreateGrid(0, kColumnCount);
-        wxui::configureStableGridRendering(*grid_);
-        grid_->SetColLabelValue(kColPath, "Path");
-        grid_->SetColLabelValue(kColLabel, "Label");
-        grid_->SetColLabelValue(kColType, "Type");
-        grid_->SetColLabelValue(kColEditable, "Editable");
-        grid_->SetColLabelValue(kColValue, "Value");
-        grid_->SetColLabelValue(kColResolved, "Resolved");
-        grid_->EnableEditing(true);
-        grid_->SetColSize(kColPath, FromDIP(300));
-        grid_->SetColSize(kColLabel, FromDIP(160));
-        grid_->SetColSize(kColType, FromDIP(140));
-        grid_->SetColSize(kColEditable, FromDIP(80));
-        grid_->SetColSize(kColValue, FromDIP(300));
-        grid_->SetColSize(kColResolved, FromDIP(380));
-
         tree_ = new wxTreeCtrl(viewPanel_, ID_ElementTree, wxDefaultPosition, wxDefaultSize,
                                wxTR_HAS_BUTTONS | wxTR_LINES_AT_ROOT | wxTR_SINGLE);
 
-        viewSizer_->Add(grid_, 1, wxEXPAND);
         viewSizer_->Add(tree_, 1, wxEXPAND);
         viewPanel_->SetSizer(viewSizer_);
         root->Add(viewPanel_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
 
         panel->SetSizer(root);
-        setViewMode(pendingViewMode_, false);
         if (filterText_) filterText_->Bind(wxEVT_TEXT, &NeoGFFFrame::onFilterText, this);
-        Bind(wxEVT_GRID_CELL_CHANGED, &NeoGFFFrame::onCellChanged, this, ID_Grid);
-        Bind(wxEVT_GRID_LABEL_RIGHT_CLICK, &NeoGFFFrame::onGridLabelRightClick, this, ID_Grid);
         Bind(wxEVT_TREE_SEL_CHANGED, &NeoGFFFrame::onTreeSelectionChanged, this, ID_ElementTree);
         Bind(wxEVT_TREE_ITEM_ACTIVATED, &NeoGFFFrame::onTreeActivated, this, ID_ElementTree);
         Bind(wxEVT_TREE_ITEM_EXPANDING, &NeoGFFFrame::onTreeItemExpanding, this, ID_ElementTree);
@@ -829,9 +743,8 @@ private:
         (void)checkDirty;
         ensureDocumentTabForOpen();
         model().load(path);
-        const std::string preferredView = viewState().preferredViewMode;
         viewState().resetForNewDocument();
-        viewState().preferredViewMode = preferredView;
+        viewState().preferredViewMode = "ElementTree";
         viewState().selectedLogicalRow = -1;
         viewState().filterTerm.clear();
         if (filterText_ != nullptr && !filterText_->GetValue().empty()) {
@@ -880,9 +793,8 @@ private:
         try {
             createDocumentTab(true);
             model().newFile(*type);
-            const std::string preferredView = viewState().preferredViewMode;
             viewState().resetForNewDocument();
-            viewState().preferredViewMode = preferredView;
+            viewState().preferredViewMode = "ElementTree";
             viewState().selectedLogicalRow = -1;
             viewState().filterTerm.clear();
             if (filterText_ != nullptr && !filterText_->GetValue().empty()) {
@@ -970,115 +882,12 @@ private:
         refreshAll();
     }
 
-    std::size_t actualColumnForVisible(int visualColumn) const {
-        try {
-            return neoview::logicalColumnForVisual(viewState(), visualColumn);
-        } catch (const std::out_of_range&) {
-            throw std::runtime_error("Selected column is outside the current view.");
-        }
-    }
-
-    int selectedVisualColumn() const {
-        if (contextVisualColumn_ >= 0) return contextVisualColumn_;
-        return grid_ ? grid_->GetGridCursorCol() : -1;
-    }
-
-    void promptColumnFilterForVisualColumn(int visualColumn) {
-        const std::size_t logicalColumn = actualColumnForVisible(visualColumn);
-        const auto* existing = neoview::findColumnFilter(viewState(), logicalColumn);
-        const std::string label = gffColumnLabel(logicalColumn);
-        const auto term = wxui::promptText(this, "Filter Column", "Show rows where column '" + label + "' contains:", existing ? existing->term : std::string());
-        if (!term) return;
-        neoview::setColumnFilter(viewState(), neoview::ColumnFilter{logicalColumn, label, *term, neoview::TextFilterMode::Contains, true});
-        refreshAll();
-    }
-
     void onClearFilter(wxCommandEvent&) {
         clearAllFiltersAndRefresh();
     }
 
-    void onFilterSelectedColumn(wxCommandEvent&) {
-        try {
-            if (isTreeView(viewMode())) {
-                throw std::runtime_error("Column filters apply to the flat grid view. Switch to Flat Grid View first.");
-            }
-            promptColumnFilterForVisualColumn(selectedVisualColumn());
-        } catch (const std::exception& ex) {
-            wxui::showError(this, ex);
-        }
-        contextVisualColumn_ = -1;
-    }
-
-    void onClearSelectedColumnFilter(wxCommandEvent&) {
-        try {
-            neoview::clearColumnFilter(viewState(), actualColumnForVisible(selectedVisualColumn()));
-            refreshAll();
-        } catch (const std::exception& ex) {
-            wxui::showError(this, ex);
-        }
-        contextVisualColumn_ = -1;
-    }
-
     void onClearAllFilters(wxCommandEvent&) {
         clearAllFiltersAndRefresh();
-    }
-
-    void onMoveColumnLeft(wxCommandEvent&) {
-        const int visual = selectedVisualColumn();
-        if (neoview::moveVisualColumn(viewState(), visual, visual - 1)) refreshAll();
-    }
-
-    void onMoveColumnRight(wxCommandEvent&) {
-        const int visual = selectedVisualColumn();
-        if (neoview::moveVisualColumn(viewState(), visual, visual + 1)) refreshAll();
-    }
-
-    void onResetColumnOrder(wxCommandEvent&) {
-        neoview::setIdentityColumns(viewState(), kColumnCount);
-        refreshAll();
-    }
-
-    void onResetRowOrder(wxCommandEvent&) {
-        refreshAll();
-    }
-
-    void onGridLabelRightClick(wxGridEvent& event) {
-        if (event.GetCol() >= 0) {
-            contextVisualColumn_ = event.GetCol();
-            wxMenu menu;
-            menu.Append(ID_FilterColumn, "Filter This Column...");
-            menu.Append(ID_ClearColumnFilter, "Clear Filter on This Column");
-            menu.AppendSeparator();
-            menu.Append(ID_MoveColumnLeft, "Move Column Left");
-            menu.Append(ID_MoveColumnRight, "Move Column Right");
-            menu.Append(ID_ResetColumnOrder, "Reset Column Order");
-            PopupMenu(&menu);
-            return;
-        }
-        event.Skip();
-    }
-
-    void setViewMode(GffViewMode mode, bool persist) {
-        // buildWindow() selects the initial view before the first document tab
-        // exists. Keep that choice in pendingViewMode_ until createDocumentTab()
-        // creates a per-document view state; never index the empty document
-        // vector during frame construction.
-        viewMode() = mode;
-        if (hasActiveDocument()) {
-            viewState().preferredViewMode =
-                mode == GffViewMode::ElementTree ? "ElementTree" : "FlatGrid";
-        }
-        if (persist) writePreferredViewMode(mode);
-        if (flatGridViewItem_) flatGridViewItem_->Check(mode == GffViewMode::FlatGrid);
-        if (elementTreeViewItem_) elementTreeViewItem_->Check(mode == GffViewMode::ElementTree);
-        if (grid_) grid_->Show(mode == GffViewMode::FlatGrid);
-        if (tree_) tree_->Show(mode == GffViewMode::ElementTree);
-        if (viewSizer_) viewSizer_->Layout();
-        if (viewPanel_) viewPanel_->Layout();
-        Layout();
-        if (persist && hasActiveDocument()) {
-            refreshActiveView();
-        }
     }
 
     void onExpandTree(wxCommandEvent&) {
@@ -1101,13 +910,6 @@ private:
             if (auto* data = dynamic_cast<GffTreeItemData*>(tree_->GetItemData(item))) {
                 viewState().selectedLogicalRow = data->rowIndex();
                 viewState().selectedPath = data->path();
-                if (grid_ && viewState().selectedLogicalRow >= 0 && viewState().selectedLogicalRow < grid_->GetNumberRows()) {
-                    grid_->SetGridCursor(viewState().selectedLogicalRow, kColValue);
-                    grid_->SelectRow(viewState().selectedLogicalRow);
-                    grid_->MakeCellVisible(viewState().selectedLogicalRow, kColValue);
-                } else if (grid_) {
-                    grid_->ClearSelection();
-                }
             }
         }
         event.Skip();
@@ -1124,9 +926,8 @@ private:
             } else {
                 throw std::invalid_argument("NeoGFF imports only semantic XML or JSON. CSV/TSV flattened import is not supported for GFF files.");
             }
-            const std::string preferredMode = viewState().preferredViewMode;
             viewState().resetForNewDocument();
-            viewState().preferredViewMode = preferredMode;
+            viewState().preferredViewMode = "ElementTree";
             if (filterText_) filterText_->ChangeValue("");
             refreshAll();
         } catch (const std::exception& ex) {
@@ -1204,43 +1005,10 @@ private:
     }
 
     void onCopyCells(wxCommandEvent&) {
+        const int row = viewState().selectedLogicalRow;
+        if (row < 0 || row >= static_cast<int>(displayRows_.size())) return;
         if (!wxTheClipboard->Open()) return;
-        if (isTreeView(viewMode())) {
-            neotabular::Table copied;
-            const int row = viewState().selectedLogicalRow;
-            if (row >= 0 && row < static_cast<int>(displayRows_.size())) {
-                const auto& item = displayRows_[static_cast<std::size_t>(row)];
-                copied.rows.push_back({item.path, item.label, item.type, item.editable ? "yes" : "no", item.value, item.resolved});
-            }
-            wxTheClipboard->SetData(new wxTextDataObject(wxui::toWx(neotabular::serializeDelimited(copied, '\t'))));
-            wxTheClipboard->Close();
-            return;
-        }
-        if (grid_ == nullptr) {
-            wxTheClipboard->Close();
-            return;
-        }
-        int top = grid_->GetGridCursorRow();
-        int left = grid_->GetGridCursorCol();
-        int bottom = top;
-        int right = left;
-        const wxGridCellCoordsArray blockTop = grid_->GetSelectionBlockTopLeft();
-        const wxGridCellCoordsArray blockBottom = grid_->GetSelectionBlockBottomRight();
-        if (!blockTop.IsEmpty() && !blockBottom.IsEmpty()) {
-            top = blockTop[0].GetRow();
-            left = blockTop[0].GetCol();
-            bottom = blockBottom[0].GetRow();
-            right = blockBottom[0].GetCol();
-        }
-        neotabular::Table copied;
-        if (top >= 0 && left >= 0 && bottom >= top && right >= left) {
-            for (int r = top; r <= bottom; ++r) {
-                std::vector<std::string> row;
-                for (int c = left; c <= right; ++c) row.push_back(wxui::toStd(grid_->GetCellValue(r, c)));
-                copied.rows.push_back(std::move(row));
-            }
-        }
-        wxTheClipboard->SetData(new wxTextDataObject(wxui::toWx(neotabular::serializeDelimited(copied, '\t'))));
+        wxTheClipboard->SetData(new wxTextDataObject(wxui::toWx(displayRows_[static_cast<std::size_t>(row)].value)));
         wxTheClipboard->Close();
     }
 
@@ -1253,34 +1021,13 @@ private:
         wxTextDataObject data;
         wxTheClipboard->GetData(data);
         wxTheClipboard->Close();
+
+        const int row = viewState().selectedLogicalRow;
+        if (row < 0 || row >= static_cast<int>(displayRows_.size())) return;
+        const auto& selected = displayRows_[static_cast<std::size_t>(row)];
+        if (!selected.editable) return;
         try {
-            const auto pasted = neotabular::parseDelimited(wxui::toStd(data.GetText()), '\t');
-            if (isTreeView(viewMode())) {
-                const int row = viewState().selectedLogicalRow;
-                if (row >= 0 && row < static_cast<int>(displayRows_.size()) && displayRows_[static_cast<std::size_t>(row)].editable &&
-                    !pasted.rows.empty() && !pasted.rows.front().empty()) {
-                    model().setValue(displayRows_[static_cast<std::size_t>(row)].path, pasted.rows.front().back());
-                }
-                refreshAll();
-                return;
-            }
-            if (grid_ == nullptr) {
-                refreshAll();
-                return;
-            }
-            const int startRow = grid_->GetGridCursorRow();
-            const int startCol = grid_->GetGridCursorCol();
-            for (std::size_t r = 0; r < pasted.rows.size(); ++r) {
-                const int gridRow = startRow + static_cast<int>(r);
-                if (gridRow < 0 || gridRow >= static_cast<int>(displayRows_.size())) continue;
-                for (std::size_t c = 0; c < pasted.rows[r].size(); ++c) {
-                    const int col = startCol + static_cast<int>(c);
-                    const std::size_t logicalColumn = actualColumnForVisible(col);
-                    if (logicalColumn == kColValue && displayRows_[static_cast<std::size_t>(gridRow)].editable) {
-                        model().setValue(displayRows_[static_cast<std::size_t>(gridRow)].path, pasted.rows[r][c]);
-                    }
-                }
-            }
+            model().setValue(selected.path, wxui::toStd(data.GetText()));
             refreshAll();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
@@ -1313,17 +1060,13 @@ private:
     }
 
     int selectedGridRow() const {
-        if (isTreeView(viewMode())) return viewState().selectedLogicalRow;
-        if (!grid_) return -1;
-        if (!grid_->GetSelectedRows().IsEmpty()) return grid_->GetSelectedRows()[0];
-        const int row = grid_->GetGridCursorRow();
-        return row >= 0 && row < static_cast<int>(displayRows_.size()) ? row : -1;
+        return viewState().selectedLogicalRow;
     }
 
     std::string selectedContainerPath() const {
         const int row = selectedGridRow();
         if (row < 0 || row >= static_cast<int>(displayRows_.size())) {
-            return isTreeView(viewMode()) ? viewState().selectedPath : std::string{};
+            return viewState().selectedPath;
         }
         const auto& item = displayRows_[static_cast<std::size_t>(row)];
         if (item.type == "Struct" || item.type == "List") return item.path;
@@ -1354,38 +1097,6 @@ private:
             refreshAll();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
-        }
-    }
-
-    void onCellChanged(wxGridEvent& event) {
-        const int row = event.GetRow();
-        const int col = event.GetCol();
-        if (row < 0 || row >= static_cast<int>(displayRows_.size())) {
-            event.Skip();
-            return;
-        }
-        std::size_t logicalColumn = 0;
-        try {
-            logicalColumn = actualColumnForVisible(col);
-        } catch (const std::exception&) {
-            event.Skip();
-            return;
-        }
-        if (logicalColumn != kColValue) {
-            event.Skip();
-            return;
-        }
-        const auto item = displayRows_[static_cast<std::size_t>(row)];
-        if (!item.editable) {
-            refreshAll();
-            return;
-        }
-        try {
-            model().setValue(item.path, wxui::toStd(grid_->GetCellValue(row, col)));
-            refreshAll();
-        } catch (const std::exception& ex) {
-            wxui::showError(this, ex);
-            refreshAll();
         }
     }
 
@@ -1600,91 +1311,15 @@ private:
     }
 
     bool gffRowPassesCurrentFilters(const GffFieldRow& row) const {
-        if (!viewState().filterTerm.empty()) {
-            bool matches = false;
-            for (std::size_t column = 0; column < kColumnCount; ++column) {
-                if (neoview::containsInsensitive(
-                        gffCellText(row, column),
-                        viewState().filterTerm)) {
-                    matches = true;
-                    break;
-                }
-            }
-            if (!matches) return false;
+        if (viewState().filterTerm.empty()) return true;
+        for (std::size_t column = 0; column < kColumnCount; ++column) {
+            if (neoview::containsInsensitive(gffCellText(row, column), viewState().filterTerm)) return true;
         }
-
-        return neoview::rowPassesColumnFilters(
-            viewState(),
-            [&](std::size_t logicalColumn) {
-                return gffCellText(row, logicalColumn);
-            });
-    }
-
-    void refreshGrid() {
-        if (!grid_) return;
-        if (displayRows_.size() >
-            static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-            throw std::runtime_error("This GFF contains too many fields for the grid view.");
-        }
-
-        {
-            wxGridUpdateLocker updateLocker(grid_);
-            grid_->DisableCellEditControl();
-            grid_->ClearSelection();
-
-            const int currentRows = grid_->GetNumberRows();
-            if (currentRows > 0) grid_->DeleteRows(0, currentRows);
-            if (!displayRows_.empty()) {
-                grid_->AppendRows(static_cast<int>(displayRows_.size()));
-            }
-
-            const int wantedCols =
-                static_cast<int>(viewState().visualToLogicalColumns.size());
-            std::vector<std::size_t> logicalColumns;
-            logicalColumns.reserve(static_cast<std::size_t>(wantedCols));
-            for (int visualCol = 0; visualCol < wantedCols; ++visualCol) {
-                const std::size_t logicalColumn =
-                    actualColumnForVisible(visualCol);
-                logicalColumns.push_back(logicalColumn);
-
-                std::string label = gffColumnLabel(logicalColumn);
-                if (neoview::findColumnFilter(viewState(), logicalColumn) !=
-                    nullptr) {
-                    label += " *";
-                }
-                grid_->SetColLabelValue(visualCol, wxui::toWx(label));
-
-                auto* columnAttr = new wxGridCellAttr();
-                columnAttr->SetReadOnly(logicalColumn != kColValue);
-                grid_->SetColAttr(visualCol, columnAttr);
-            }
-
-            for (std::size_t i = 0; i < displayRows_.size(); ++i) {
-                const int gridRow = static_cast<int>(i);
-                const auto& row = displayRows_[i];
-                for (int visualCol = 0; visualCol < wantedCols; ++visualCol) {
-                    const std::size_t logicalColumn =
-                        logicalColumns[static_cast<std::size_t>(visualCol)];
-                    grid_->SetCellValue(
-                        gridRow,
-                        visualCol,
-                        wxui::toWx(gffCellText(row, logicalColumn)));
-                    if (logicalColumn == kColValue && !row.editable) {
-                        grid_->SetReadOnly(gridRow, visualCol, true);
-                    }
-                }
-            }
-        }
-
-        grid_->ForceRefresh();
+        return false;
     }
 
     void refreshActiveView() {
-        if (isTreeView(viewMode())) {
-            refreshTree();
-        } else {
-            refreshGrid();
-        }
+        refreshTree();
     }
 
     void refreshAll() {
@@ -1737,9 +1372,6 @@ private:
             std::string detail =
                 std::to_string(displayRows_.size()) + "/" +
                 std::to_string(totalRows) + " rows";
-            const std::string columnFilters =
-                neoview::columnFilterSummary(viewState());
-            if (!columnFilters.empty()) detail += "; filters: " + columnFilters;
             if (model().tlk().loaded()) {
                 detail += "; TLK " +
                           std::to_string(model().tlk().count()) +
@@ -1753,8 +1385,6 @@ private:
 
     void applyDarkMode() {
         if (darkModeItem_) darkModeItem_->Check(darkMode_);
-        if (flatGridViewItem_) flatGridViewItem_->Check(viewMode() == GffViewMode::FlatGrid);
-        if (elementTreeViewItem_) elementTreeViewItem_->Check(viewMode() == GffViewMode::ElementTree);
         wxui::applyTheme(this, darkMode_);
         applyFontScale();
     }
@@ -1801,16 +1431,11 @@ private:
     wxTextCtrl* filterText_ = nullptr;
     wxPanel* viewPanel_ = nullptr;
     wxBoxSizer* viewSizer_ = nullptr;
-    wxGrid* grid_ = nullptr;
-    int contextVisualColumn_ = -1;
     wxTreeCtrl* tree_ = nullptr;
     std::vector<wxTreeItemId> treeRowItems_;
     std::unordered_map<std::string, std::vector<std::size_t>> treeChildrenByParent_;
     std::unordered_set<std::string> treeMaterializedPaths_;
-    wxMenuItem* flatGridViewItem_ = nullptr;
-    wxMenuItem* elementTreeViewItem_ = nullptr;
     wxMenuItem* darkModeItem_ = nullptr;
-    GffViewMode pendingViewMode_ = GffViewMode::FlatGrid;
     neoview::FontScaleWheelFilter fontScaleWheelFilter_;
     double fontScale_ = neoview::kDefaultFontScale;
     bool darkMode_ = false;
