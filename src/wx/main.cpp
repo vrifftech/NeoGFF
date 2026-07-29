@@ -122,15 +122,47 @@ std::string normalizedGffPatcherType(std::string type) {
     return type;
 }
 
+bool supportedGffPatcherContent(const std::string& type) {
+    static const std::unordered_set<std::string> supported = {"ARE", "BIC", "BTC", "BTD", "BTE", "BTI", "BTM", "BTP", "BTT",
+        "FAC", "GFF", "GIT", "GUI", "IFO", "INV", "ITP", "JRL", "NFO",
+        "PT", "PTH", "GVT", "UTC", "UTD", "UTE", "UTI", "UTM", "UTP",
+        "UTS", "UTT", "UTW"};
+    return supported.count(normalizedGffPatcherType(type)) != 0u;
+}
+
+bool containsJadeStringRef(const GffModel& model) {
+    const auto table = model.toTable();
+    auto typeColumn = std::find(table.columns.begin(), table.columns.end(), "Type");
+    if (typeColumn == table.columns.end()) return false;
+    const std::size_t index = static_cast<std::size_t>(std::distance(table.columns.begin(), typeColumn));
+    for (const auto& row : table.rows) {
+        if (index < row.size() && normalizedGffPatcherType(row[index]) == "JADESTRINGREF") return true;
+    }
+    return false;
+}
+
 void requireGenericGffPatcherModel(const GffModel& model, const std::string& role) {
     if (!model.loaded()) throw std::runtime_error(role + " is not loaded.");
     if (model.gff().isGff4()) {
         throw std::runtime_error(
-            role + " is GFF4. TSLPatcher/HoloPatcher [GFFList] output supports GFF3 files only.");
+            role + " is GFF4. TSLPatcher/HoloPatcher [GFFList] output supports classic GFF V3.2 files only.");
     }
-    if (normalizedGffPatcherType(model.fileType()) == "DLG") {
+    if (normalizedGffPatcherType(model.version()) != "V3.2") {
+        throw std::runtime_error(
+            role + " is " + model.version() + ". Original TSLPatcher and HoloPatcher 1.7 share support only for classic GFF V3.2 resources.");
+    }
+    const std::string type = normalizedGffPatcherType(model.fileType());
+    if (type == "DLG") {
         throw std::runtime_error(
             role + " is a DLG file. Open it in NeoDLG and use the DLG-aware patcher exporter so dialogue indexes remain dynamic.");
+    }
+    if (!supportedGffPatcherContent(type)) {
+        throw std::runtime_error(
+            role + " uses GFF content type " + type + ", which is not recognized by both original TSLPatcher and HoloPatcher 1.7.");
+    }
+    if (containsJadeStringRef(model)) {
+        throw std::runtime_error(
+            role + " contains JadeStringRef fields, which neither patcher can encode in GFFList instructions.");
     }
 }
 

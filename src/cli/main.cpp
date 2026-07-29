@@ -12,6 +12,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -86,18 +87,49 @@ std::string normalizedGffType(std::string type) {
     return type;
 }
 
+bool supportedGffPatcherContent(const std::string& type) {
+    static const std::unordered_set<std::string> supported = {"ARE", "BIC", "BTC", "BTD", "BTE", "BTI", "BTM", "BTP", "BTT",
+        "FAC", "GFF", "GIT", "GUI", "IFO", "INV", "ITP", "JRL", "NFO",
+        "PT", "PTH", "GVT", "UTC", "UTD", "UTE", "UTI", "UTM", "UTP",
+        "UTS", "UTT", "UTW"};
+    return supported.count(normalizedGffType(type)) != 0u;
+}
+
+bool containsJadeStringRef(const GffModel& model) {
+    const auto table = model.toTable();
+    auto typeColumn = std::find(table.columns.begin(), table.columns.end(), "Type");
+    if (typeColumn == table.columns.end()) return false;
+    const std::size_t index = static_cast<std::size_t>(std::distance(table.columns.begin(), typeColumn));
+    for (const auto& row : table.rows) {
+        if (index < row.size() && normalizedGffType(row[index]) == "JADESTRINGREF") return true;
+    }
+    return false;
+}
+
 void requireGenericGffPatcherInput(const GffModel& model, const std::string& role) {
     if (!model.loaded()) {
         throw std::runtime_error(role + " is not a loaded GFF document.");
     }
     if (model.gff().isGff4()) {
         throw std::runtime_error(
-            role + " is GFF4. TSLPatcher/HoloPatcher [GFFList] output supports BioWare GFF3 files only; "
-                   "keep GFF4 files in their native format instead.");
+            role + " is GFF4. TSLPatcher/HoloPatcher [GFFList] output supports classic GFF V3.2 files only.");
     }
-    if (normalizedGffType(model.fileType()) == "DLG") {
+    if (normalizedGffType(model.version()) != "V3.2") {
+        throw std::runtime_error(
+            role + " is " + model.version() + ". Original TSLPatcher and HoloPatcher 1.7 share support only for classic GFF V3.2 resources.");
+    }
+    const std::string type = normalizedGffType(model.fileType());
+    if (type == "DLG") {
         throw std::runtime_error(
             role + " is a DLG file. Use NeoDLG's DLG-aware TSL/HoloPatcher exporter so EntryList, ReplyList, and link indexes are allocated dynamically.");
+    }
+    if (!supportedGffPatcherContent(type)) {
+        throw std::runtime_error(
+            role + " uses GFF content type " + type + ", which is not recognized by both original TSLPatcher and HoloPatcher 1.7.");
+    }
+    if (containsJadeStringRef(model)) {
+        throw std::runtime_error(
+            role + " contains JadeStringRef fields, which neither patcher can encode in GFFList instructions.");
     }
 }
 
