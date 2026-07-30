@@ -3,6 +3,7 @@
 #include "NeoGameDirectoryMenu.hpp"
 #include "NeoDocumentTabs.hpp"
 #include "NeoSettings.hpp"
+#include "NeoTreeState.hpp"
 #include "NeoViewState.hpp"
 #include "neogff_icon.xpm"
 #include "TabularData.hpp"
@@ -418,6 +419,7 @@ private:
     struct DocumentTab {
         std::unique_ptr<GffModel> model = std::make_unique<GffModel>();
         neoview::DocumentViewState viewState;
+        neotree::TreeViewState treeState;
         std::string tlkAutoLoadWarning;
         std::string untitledName = "Untitled GFF";
         wxWindow* tabPage = nullptr;
@@ -447,17 +449,41 @@ private:
         neotabs::setTabLabel(documentTabs_, activeDocument().tabPage, tabDisplayName(activeDocument()), tabDirty(activeDocument()));
     }
 
+    std::string treeItemKey(const wxTreeItemId& item) const {
+        if (!tree_ || !item.IsOk()) return {};
+        if (item == tree_->GetRootItem()) return "$root";
+        if (auto* data = dynamic_cast<GffTreeItemData*>(tree_->GetItemData(item))) {
+            return data->path();
+        }
+        return {};
+    }
+
+    void captureRenderedTreeState() {
+        if (!tree_ || !hasActiveDocument() ||
+            treeRenderedDocumentPage_ != activeDocument().tabPage) {
+            return;
+        }
+        neotree::captureTreeViewState(
+            *tree_, activeDocument().treeState,
+            [this](const wxTreeItemId& item) { return treeItemKey(item); });
+    }
+
     void selectDocumentTab(std::size_t index) {
         if (documentTabs_ == nullptr || index >= documents_.size()) return;
+        if (hasActiveDocument() && index != activeDocumentIndex_) captureRenderedTreeState();
         tabSwitchInProgress_ = true;
         const bool selected = neotabs::changeSelectionToPage(documentTabs_, documents_[index].tabPage);
         tabSwitchInProgress_ = false;
         if (!selected) return;
         activeDocumentIndex_ = index;
+        if (filterText_ != nullptr) {
+            filterText_->ChangeValue(wxui::toWx(viewState().filterTerm));
+        }
         refreshAll();
     }
 
     void createDocumentTab(bool select = true) {
+        if (select && hasActiveDocument()) captureRenderedTreeState();
         DocumentTab tab;
         tab.model = std::make_unique<GffModel>();
         tab.viewState.resetForNewDocument();
@@ -507,6 +533,7 @@ private:
         if (index >= documents_.size() || !confirmCloseDocumentTab(index)) return false;
 
         wxWindow* const page = documents_[index].tabPage;
+        if (treeRenderedDocumentPage_ == page) treeRenderedDocumentPage_ = nullptr;
         tabSwitchInProgress_ = true;
         const bool deleted = neotabs::deleteTabPage(documentTabs_, page);
         tabSwitchInProgress_ = false;
@@ -779,6 +806,8 @@ private:
         viewState().preferredViewMode = "ElementTree";
         viewState().selectedLogicalRow = -1;
         viewState().filterTerm.clear();
+        activeDocument().treeState.reset();
+        if (treeRenderedDocumentPage_ == activeDocument().tabPage) treeRenderedDocumentPage_ = nullptr;
         if (filterText_ != nullptr && !filterText_->GetValue().empty()) {
             filterText_->ChangeValue(wxString{});
         }
@@ -829,6 +858,8 @@ private:
             viewState().preferredViewMode = "ElementTree";
             viewState().selectedLogicalRow = -1;
             viewState().filterTerm.clear();
+            activeDocument().treeState.reset();
+            if (treeRenderedDocumentPage_ == activeDocument().tabPage) treeRenderedDocumentPage_ = nullptr;
             if (filterText_ != nullptr && !filterText_->GetValue().empty()) {
                 filterText_->ChangeValue(wxString{});
             }
@@ -934,16 +965,19 @@ private:
         if (root.IsOk()) tree_->Expand(root);
     }
 
-    void onTreeSelectionChanged(wxTreeEvent& event) {
+    void updateSelectionStateFromTreeItem(const wxTreeItemId& item) {
         viewState().selectedLogicalRow = -1;
         viewState().selectedPath.clear();
-        const wxTreeItemId item = event.GetItem();
         if (tree_ && item.IsOk()) {
             if (auto* data = dynamic_cast<GffTreeItemData*>(tree_->GetItemData(item))) {
                 viewState().selectedLogicalRow = data->rowIndex();
                 viewState().selectedPath = data->path();
             }
         }
+    }
+
+    void onTreeSelectionChanged(wxTreeEvent& event) {
+        if (!treeRefreshInProgress_) updateSelectionStateFromTreeItem(event.GetItem());
         event.Skip();
     }
 
@@ -960,6 +994,8 @@ private:
             }
             viewState().resetForNewDocument();
             viewState().preferredViewMode = "ElementTree";
+            activeDocument().treeState.reset();
+            if (treeRenderedDocumentPage_ == activeDocument().tabPage) treeRenderedDocumentPage_ = nullptr;
             if (filterText_) filterText_->ChangeValue("");
             refreshAll();
         } catch (const std::exception& ex) {
@@ -1225,6 +1261,7 @@ private:
                 -1,
                 new GffTreeItemData(row.path, static_cast<int>(rowIndex)));
             treeRowItems_[rowIndex] = item;
+            treeItemsByPath_[row.path] = item;
 
             const auto grandchildren = treeChildrenByParent_.find(row.path);
             if (grandchildren != treeChildrenByParent_.end() &&
@@ -1253,13 +1290,47 @@ private:
         event.Skip();
     }
 
+    wxTreeItemId ensureTreeItemForKey(const std::string& key) {
+        if (!tree_) return {};
+        const wxTreeItemId root = tree_->GetRootItem();
+        if (key == "$root") return root;
+
+        const auto existing = treeItemsByPath_.find(key);
+        if (existing != treeItemsByPath_.end() && existing->second.IsOk()) {
+            return existing->second;
+        }
+
+        const std::string parentPath = treeParentPathOf(key);
+        const wxTreeItemId parent = parentPath.empty()
+            ? root
+            : ensureTreeItemForKey(parentPath);
+        if (!parent.IsOk()) return {};
+        materializeTreeChildren(parent, parentPath);
+
+        const auto created = treeItemsByPath_.find(key);
+        return created == treeItemsByPath_.end() ? wxTreeItemId{} : created->second;
+    }
+
+    void selectDefaultTreeItem() {
+        const auto rootRows = treeChildrenByParent_.find(std::string{});
+        if (rootRows == treeChildrenByParent_.end() || rootRows->second.empty()) return;
+        const std::size_t firstRow = rootRows->second.front();
+        if (firstRow >= treeRowItems_.size() || !treeRowItems_[firstRow].IsOk()) return;
+        tree_->SelectItem(treeRowItems_[firstRow]);
+        updateSelectionStateFromTreeItem(treeRowItems_[firstRow]);
+    }
+
     void refreshTree() {
-        if (!tree_) return;
+        if (!tree_ || !hasActiveDocument()) return;
+
+        if (treeRenderedDocumentPage_ == activeDocument().tabPage) {
+            captureRenderedTreeState();
+        }
 
         wxWindowUpdateLocker updateLocker(tree_);
-        viewState().selectedLogicalRow = -1;
-        viewState().selectedPath.clear();
+        treeRefreshInProgress_ = true;
         treeRowItems_.assign(displayRows_.size(), wxTreeItemId{});
+        treeItemsByPath_.clear();
         treeChildrenByParent_.clear();
         treeMaterializedPaths_.clear();
         tree_->DeleteAllItems();
@@ -1270,36 +1341,50 @@ private:
         const wxTreeItemId root = tree_->AddRoot(
             wxui::toWx(rootText), -1, -1, new GffTreeItemData(std::string{}, -1));
 
-        if (!model().loaded() || displayRows_.empty()) {
+        if (model().loaded() && !displayRows_.empty()) {
+            std::unordered_map<std::string, std::size_t> visibleRowsByPath;
+            visibleRowsByPath.reserve(displayRows_.size());
+            for (std::size_t i = 0; i < displayRows_.size(); ++i) {
+                visibleRowsByPath.emplace(displayRows_[i].path, i);
+            }
+
+            for (std::size_t i = 0; i < displayRows_.size(); ++i) {
+                std::string parentPath = treeParentPathOf(displayRows_[i].path);
+                while (!parentPath.empty() &&
+                       visibleRowsByPath.find(parentPath) == visibleRowsByPath.end()) {
+                    parentPath = treeParentPathOf(parentPath);
+                }
+                treeChildrenByParent_[parentPath].push_back(i);
+            }
+
+            materializeTreeChildren(root, std::string{});
+        }
+
+        const neotree::TreeViewState& state = activeDocument().treeState;
+        if (state.initialized) {
+            const neotree::TreeRestoreResult restored = neotree::restoreTreeViewState(
+                *tree_, state,
+                [this](const std::string& key) { return ensureTreeItemForKey(key); });
+            if (restored.selectionRestored) {
+                updateSelectionStateFromTreeItem(tree_->GetSelection());
+            } else if (!viewState().selectedPath.empty()) {
+                const wxTreeItemId selected = ensureTreeItemForKey(viewState().selectedPath);
+                if (selected.IsOk()) {
+                    tree_->SelectItem(selected);
+                    updateSelectionStateFromTreeItem(selected);
+                } else {
+                    selectDefaultTreeItem();
+                }
+            } else {
+                selectDefaultTreeItem();
+            }
+        } else {
             tree_->Expand(root);
-            return;
+            selectDefaultTreeItem();
         }
 
-        std::unordered_map<std::string, std::size_t> visibleRowsByPath;
-        visibleRowsByPath.reserve(displayRows_.size());
-        for (std::size_t i = 0; i < displayRows_.size(); ++i) {
-            visibleRowsByPath.emplace(displayRows_[i].path, i);
-        }
-
-        for (std::size_t i = 0; i < displayRows_.size(); ++i) {
-            std::string parentPath = treeParentPathOf(displayRows_[i].path);
-            while (!parentPath.empty() &&
-                   visibleRowsByPath.find(parentPath) == visibleRowsByPath.end()) {
-                parentPath = treeParentPathOf(parentPath);
-            }
-            treeChildrenByParent_[parentPath].push_back(i);
-        }
-
-        materializeTreeChildren(root, std::string{});
-        tree_->Expand(root);
-
-        const auto rootRows = treeChildrenByParent_.find(std::string{});
-        if (rootRows != treeChildrenByParent_.end() && !rootRows->second.empty()) {
-            const std::size_t firstRow = rootRows->second.front();
-            if (firstRow < treeRowItems_.size() && treeRowItems_[firstRow].IsOk()) {
-                tree_->SelectItem(treeRowItems_[firstRow]);
-            }
-        }
+        treeRenderedDocumentPage_ = activeDocument().tabPage;
+        treeRefreshInProgress_ = false;
     }
 
     void expandTreeRecursive(const wxTreeItemId& item) {
@@ -1465,8 +1550,11 @@ private:
     wxBoxSizer* viewSizer_ = nullptr;
     wxTreeCtrl* tree_ = nullptr;
     std::vector<wxTreeItemId> treeRowItems_;
+    std::unordered_map<std::string, wxTreeItemId> treeItemsByPath_;
     std::unordered_map<std::string, std::vector<std::size_t>> treeChildrenByParent_;
     std::unordered_set<std::string> treeMaterializedPaths_;
+    wxWindow* treeRenderedDocumentPage_ = nullptr;
+    bool treeRefreshInProgress_ = false;
     wxMenuItem* darkModeItem_ = nullptr;
     neoview::FontScaleWheelFilter fontScaleWheelFilter_;
     double fontScale_ = neoview::kDefaultFontScale;
