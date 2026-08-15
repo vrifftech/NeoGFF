@@ -29,8 +29,8 @@ void usage(std::ostream& out) {
         << "  neogff-cli search <gff> <term> [--tlk dialog.tlk]\n"
         << "  neogff-cli export <gff> <xml|json> <output>\n"
         << "  neogff-cli import <input-gff> <output-gff> <xml|json> <input-document>\n"
-        << "  neogff-cli diff-tslpatcher <original-gff> <modified-input> <output-dir|fragment.ini> [--modified-format xml|json|gff|kotor|native|auto] [--package|--fragment] [--filename name] [--allow-unsupported]\n"
-        << "  neogff-cli diff-tslpatcher-import <original-gff> <modified-input> <xml|json|gff|kotor|native|auto> <output-dir|fragment.ini> [--package|--fragment] [--filename name] [--allow-unsupported]\n"
+        << "  neogff-cli diff-tslpatcher <original-gff> <modified-input> <output-dir|fragment.ini> [--modified-format xml|json|gff|kotor|native|auto] [--package|--fragment] [--filename name] [--ini installer.ini] [--allow-unsupported]\n"
+        << "  neogff-cli diff-tslpatcher-import <original-gff> <modified-input> <xml|json|gff|kotor|native|auto> <output-dir|fragment.ini> [--package|--fragment] [--filename name] [--ini installer.ini] [--allow-unsupported]\n"
         << "  neogff-cli roundtrip <input-gff> <output-gff>\n"
         << "  neogff-cli new <output-gff> [file-type]\n"
         << "  neogff-cli set-value <input-gff> <output-gff> <path> <value>\n"
@@ -55,6 +55,7 @@ struct PatchOutputOptions {
     bool allowUnsupported = false;
     std::string patchFilename;
     std::string modifiedFormat = "auto";
+    std::filesystem::path iniFilename = "changes.ini";
 };
 
 PatchOutputOptions parsePatchOutputOptions(int argc, char** argv, int begin, const std::filesystem::path& original) {
@@ -67,6 +68,9 @@ PatchOutputOptions parsePatchOutputOptions(int argc, char** argv, int begin, con
         else if (arg == "--filename") {
             if (i + 1 >= argc) throw std::runtime_error("--filename requires a value.");
             options.patchFilename = argv[++i];
+        } else if (arg == "--ini") {
+            if (i + 1 >= argc) throw std::runtime_error("--ini requires a filename.");
+            options.iniFilename = argv[++i];
         } else if (arg == "--allow-unsupported") options.allowUnsupported = true;
         else if (arg == "--modified-format" || arg == "--input-format") {
             if (i + 1 >= argc) throw std::runtime_error(arg + " requires a value.");
@@ -147,8 +151,14 @@ void requireMatchingGffPatchDocuments(const GffModel& original, const GffModel& 
 void writePatchOutput(const neotsl::PatchProject& project, const std::filesystem::path& output, const PatchOutputOptions& options) {
     if (!options.allowUnsupported) neotsl::throwIfUnsupported(project);
     else neotsl::printReport(project);
-    if (options.package) neotsl::writePackage(project, output, true);
-    else neotsl::writeFragment(project, output);
+    if (options.package) {
+        const std::filesystem::path iniPath = options.iniFilename.is_absolute()
+            ? options.iniFilename
+            : output / options.iniFilename;
+        neotsl::writePackageToIni(project, iniPath, true);
+    } else {
+        neotsl::writeFragment(project, output);
+    }
 }
 
 std::string normalizeParentPath(std::string path) {

@@ -3,6 +3,7 @@
 #include "NeoGameDirectoryMenu.hpp"
 #include "NeoDocumentTabs.hpp"
 #include "NeoSettings.hpp"
+#include "NeoPatcherExport.hpp"
 #include "NeoTreeState.hpp"
 #include "NeoViewState.hpp"
 #include "neogff_icon.xpm"
@@ -36,6 +37,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+static_assert(wxui::kPatcherExportUiApiVersion >= 3u,
+              "NeoGFF requires the exact-INI/Fragment patch-export UI from the current neoshared checkout.");
 
 namespace {
 
@@ -209,8 +213,7 @@ enum : int {
     ID_ImportJson,
     ID_ExportXml,
     ID_ExportJson,
-    ID_ExportPatcherPackage,
-    ID_ExportPatcherFragment,
+    ID_ExportPatcher,
     ID_ExpandTree,
     ID_CollapseTree,
     ID_DarkMode,
@@ -622,8 +625,7 @@ private:
         exportMenu->Append(ID_ExportXml, "Export as &XML...");
         exportMenu->Append(ID_ExportJson, "Export as &JSON...");
         exportMenu->AppendSeparator();
-        exportMenu->Append(ID_ExportPatcherPackage, "Export TSL/HoloPatcher &Package...");
-        exportMenu->Append(ID_ExportPatcherFragment, "Export TSL/HoloPatcher &Fragment...");
+        exportMenu->Append(ID_ExportPatcher, "Export TSL/HoloPatcher Instructions...");
 
         auto* edit = new wxMenu;
         edit->Append(ID_CopyCells, "&Copy Selected Value	Ctrl-C");
@@ -680,8 +682,7 @@ private:
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onImport(neotabular::Format::Json); }, ID_ImportJson);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExport(neotabular::Format::Xml); }, ID_ExportXml);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExport(neotabular::Format::Json); }, ID_ExportJson);
-        Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExportPatcher(true); }, ID_ExportPatcherPackage);
-        Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExportPatcher(false); }, ID_ExportPatcherFragment);
+        Bind(wxEVT_MENU, [this](wxCommandEvent&) { onExportPatcher(); }, ID_ExportPatcher);
         Bind(wxEVT_MENU, &NeoGFFFrame::onExpandTree, this, ID_ExpandTree);
         Bind(wxEVT_MENU, &NeoGFFFrame::onCollapseTree, this, ID_CollapseTree);
         Bind(wxEVT_MENU, &NeoGFFFrame::onToggleDarkMode, this, ID_DarkMode);
@@ -1023,7 +1024,7 @@ private:
         }
     }
 
-    void onExportPatcher(bool package) {
+    void onExportPatcher() {
         if (!model().loaded()) return;
         try {
             requireGenericGffPatcherModel(model(), "The active document");
@@ -1044,29 +1045,31 @@ private:
                                                     defaultPatchName);
             if (!patchName || patchName->empty()) return;
 
+            const auto output = wxui::choosePatcherOutput(this);
+            if (!output) return;
+            const bool writeToIni = output->writesToIni();
+
             auto project = neotsl::diffGffFlatTable(
-                original.toTable(), model().toTable(), *patchName, package, *originalPath);
+                original.toTable(), model().toTable(), *patchName, writeToIni, *originalPath);
             neotsl::throwIfUnsupported(project);
 
-            if (package) {
-                const auto outputDir = wxui::chooseDirectory(this, "Choose tslpatchdata package folder");
-                if (!outputDir) return;
-                neotsl::writePackage(project, *outputDir, true);
-                wxui::showMessage(this,
-                                  "TSL/HoloPatcher Package",
-                                  "Wrote changes.ini and staged the clean GFF baseline in:\n" + pathText(*outputDir));
-            } else {
-                const auto output = wxui::chooseSaveFile(
+            if (!writeToIni) {
+                wxui::showIniFragmentDialog(
                     this,
-                    "Save TSL/HoloPatcher GFF fragment",
-                    "INI files (*.ini)|*.ini|All files (*.*)|*.*",
-                    "gff_fragment.ini");
-                if (!output) return;
-                neotsl::writeFragment(project, *output);
-                wxui::showMessage(this,
-                                  "TSL/HoloPatcher Fragment",
-                                  "Wrote a GFFList fragment to:\n" + pathText(*output));
+                    "GFF Patcher INI Fragment",
+                    project,
+                    {*patchName});
+                return;
             }
+
+            const auto report = neotsl::writePackageToIni(project, output->iniPath, true);
+            wxui::showMessage(
+                this,
+                "TSL/HoloPatcher Package",
+                std::string(report.mergedExisting ? "Merged the generated GFF instructions into:\n"
+                                                  : "Created the installer INI:\n") +
+                    pathText(report.iniPath) +
+                    "\n\nThe clean GFF baseline was staged beside the selected INI.");
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
         }
