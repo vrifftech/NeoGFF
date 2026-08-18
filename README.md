@@ -42,11 +42,6 @@ Linux GUI build:
 ./scripts/build.sh --wx ON --require-wx ON --jobs "$(nproc)"
 ```
 
-Linux CLI/core-only build:
-
-```sh
-./scripts/build.sh --wx OFF --jobs "$(nproc)"
-```
 
 Windows GUI build with the shared, pinned wxWidgets 3.3.3 overlay:
 
@@ -63,5 +58,3 @@ Windows GUI build with the shared, pinned wxWidgets 3.3.3 overlay:
   -VcpkgTriplet x64-windows-static `
   -Parallel ([Environment]::ProcessorCount)
 ```
-
-Use `-Wx OFF` on Windows for a CLI/core-only build. The default build directory is `build/`.
