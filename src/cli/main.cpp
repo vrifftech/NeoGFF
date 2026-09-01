@@ -1,6 +1,7 @@
 #include "core/AppModel.hpp"
 #include "TabularData.hpp"
 #include "core/GffJson.hpp"
+#include "core/Version.hpp"
 #include "TslPatcher.hpp"
 
 #include <algorithm>
@@ -21,7 +22,7 @@ using neogff::GffModel;
 namespace {
 
 void usage(std::ostream& out) {
-    out << "NeoGFF GFF editor CLI\n"
+    out << "NeoGFF " << neogff::kVersion << " GFF editor CLI\n"
         << "\n"
         << "Usage:\n"
         << "  neogff-cli info <gff> [--tlk dialog.tlk]\n"
@@ -299,6 +300,10 @@ int main(int argc, char** argv) {
         const std::string command = argv[1];
         if (command == "help" || command == "--help" || command == "-h") {
             usage(std::cout);
+            return 0;
+        }
+        if (command == "version" || command == "--version" || command == "-v") {
+            std::cout << "NeoGFF " << neogff::kVersion << '\n';
             return 0;
         }
 

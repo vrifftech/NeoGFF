@@ -1,0 +1,97 @@
+name: macOS
+
+on:
+  push:
+  pull_request:
+  repository_dispatch:
+    types: [neoshared-updated]
+  workflow_dispatch:
+    inputs:
+      neoshared_ref:
+        description: neoshared branch, tag, or commit SHA (blank uses NEOSHARED_REF or main)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEOSHARED_REF: ${{ github.event.client_payload.neoshared_ref || inputs.neoshared_ref || vars.NEOSHARED_REF || 'main' }}
+  MACOSX_DEPLOYMENT_TARGET: '15.0'
+
+jobs:
+  macos:
+    name: macOS 15 (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+
+    steps:
+      - name: Check out NeoGFF
+        uses: actions/checkout@v7
+        with:
+          path: tool
+          persist-credentials: false
+
+      - name: Check out neoshared
+        uses: actions/checkout@v7
+        with:
+          repository: vrifftech/neoshared
+          ref: ${{ env.NEOSHARED_REF }}
+          path: neoshared
+          persist-credentials: false
+
+      - name: Validate native runner
+        run: |
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          sw_vers
+          xcodebuild -version
+
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja wxwidgets
+          WX_PREFIX="$(brew --prefix wxwidgets)"
+          echo "$WX_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "CMAKE_PREFIX_PATH=$WX_PREFIX" >> "$GITHUB_ENV"
+          "$WX_PREFIX/bin/wx-config" --version
+
+      - name: Build and package NeoGFF
+        working-directory: tool
+        run: |
+          bash ./scripts/build-macos.sh \
+            --arch "${{ matrix.arch }}" \
+            --deployment-target "$MACOSX_DEPLOYMENT_TARGET" \
+            --neoshared-root ../neoshared \
+            --jobs 2 \
+            --clean
+
+      - name: Verify package checksum
+        run: |
+          cd tool/dist
+          shasum -a 256 -c NeoGFF-*-macos-${{ matrix.arch }}.zip.sha256
+          unzip -l NeoGFF-*-macos-${{ matrix.arch }}.zip
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: NeoGFF-macos-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            tool/dist/NeoGFF-*-macos-${{ matrix.arch }}.zip
+            tool/dist/NeoGFF-*-macos-${{ matrix.arch }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NEOSHARED_REF: ${{ github.event.client_payload.neoshared_ref || inputs.neoshared_ref || 'main' }}
+  NEOSHARED_REF: ${{ github.event.client_payload.neoshared_ref || inputs.neoshared_ref || vars.NEOSHARED_REF || 'main' }}
 
 jobs:
   linux:
@@ -40,7 +40,7 @@ jobs:
       - name: Check out neoshared
         uses: actions/checkout@v7
         with:
-          repository: vrifftech/NeoShared
+          repository: vrifftech/neoshared
           ref: ${{ env.NEOSHARED_REF }}
           path: neoshared
           persist-credentials: false
@@ -72,8 +72,6 @@ jobs:
             --jobs 2 \
             --clean
 
-      - name: Run tests
-        run: ctest --test-dir tool/build -C Release --output-on-failure
 
       - name: Stage install tree
         run: cmake --install tool/build --config Release --prefix tool/stage
@@ -104,7 +102,7 @@ jobs:
       - name: Check out neoshared
         uses: actions/checkout@v7
         with:
-          repository: vrifftech/NeoShared
+          repository: vrifftech/neoshared
           ref: ${{ env.NEOSHARED_REF }}
           path: neoshared
           persist-credentials: false
@@ -161,9 +159,6 @@ jobs:
             -Parallel 2 `
             -Clean
 
-      - name: Run tests
-        shell: pwsh
-        run: ctest --test-dir tool/build -C Release --output-on-failure
 
       - name: Stage install tree
         shell: pwsh

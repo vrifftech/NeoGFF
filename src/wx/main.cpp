@@ -10,6 +10,7 @@
 #include "TabularData.hpp"
 #include "TslPatcher.hpp"
 #include "core/GffJson.hpp"
+#include "core/Version.hpp"
 
 #include <wx/aui/auibook.h>
 #include <wx/choice.h>
@@ -27,6 +28,7 @@
 #include <exception>
 #include <fstream>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -40,6 +42,10 @@
 
 static_assert(wxui::kPatcherExportUiApiVersion >= 3u,
               "NeoGFF requires the exact-INI/Fragment patch-export UI from the current neoshared checkout.");
+#if defined(__EMSCRIPTEN__)
+static_assert(neobrowser::kBrowserFileApiVersion >= 10u,
+              "NeoGFF requires owned browser imports and transactional write-back from the current neoshared checkout.");
+#endif
 
 namespace {
 
@@ -391,7 +397,7 @@ private:
 class NeoGFFFrame final : public wxFrame {
 public:
     NeoGFFFrame()
-        : wxFrame(nullptr, wxID_ANY, "NeoGFF v1.0.0 (GFF editor)", wxDefaultPosition, wxDefaultSize) {
+        : wxFrame(nullptr, wxID_ANY, wxui::toWx(std::string("NeoGFF v") + kVersion + " (GFF editor)"), wxDefaultPosition, wxDefaultSize) {
         setApplicationIcon();
         buildMenus();
         buildWindow();
@@ -419,13 +425,21 @@ public:
 
 private:
 
+    using SaveCompletion = std::function<void(bool)>;
+    using DeferredAction = std::function<void()>;
+
     struct DocumentTab {
         std::unique_ptr<GffModel> model = std::make_unique<GffModel>();
+        std::filesystem::path logicalFilename;
         neoview::DocumentViewState viewState;
         neotree::TreeViewState treeState;
         std::string tlkAutoLoadWarning;
         std::string untitledName = "Untitled GFF";
         wxWindow* tabPage = nullptr;
+        bool saveInProgress = false;
+#if defined(__EMSCRIPTEN__)
+        neobrowser::BrowserImportLease sourceImport;
+#endif
     };
 
     bool hasActiveDocument() const {
@@ -441,15 +455,27 @@ private:
     std::string& tlkAutoLoadWarning() { return activeDocument().tlkAutoLoadWarning; }
     const std::string& tlkAutoLoadWarning() const { return activeDocument().tlkAutoLoadWarning; }
 
-    bool tabDirty(const DocumentTab& tab) const { return tab.model && tab.model->dirty(); }
+    std::filesystem::path documentFilename(const DocumentTab& tab) const {
+        if (!tab.logicalFilename.empty()) return tab.logicalFilename;
+        return tab.model ? tab.model->filename() : std::filesystem::path{};
+    }
+
+    bool tabDirty(const DocumentTab& tab) const {
+        return tab.saveInProgress || (tab.model && tab.model->dirty());
+    }
 
     std::string tabDisplayName(const DocumentTab& tab) const {
-        return neotabs::displayNameForPath(tab.model ? tab.model->filename() : std::filesystem::path{}, tab.untitledName);
+        return neotabs::displayNameForPath(documentFilename(tab), tab.untitledName);
+    }
+
+    void updateDocumentTabTitle(DocumentTab& document) {
+        neotabs::setTabLabel(documentTabs_, document.tabPage,
+                             tabDisplayName(document), tabDirty(document));
     }
 
     void updateActiveTabTitle() {
         if (!hasActiveDocument()) return;
-        neotabs::setTabLabel(documentTabs_, activeDocument().tabPage, tabDisplayName(activeDocument()), tabDirty(activeDocument()));
+        updateDocumentTabTitle(activeDocument());
     }
 
     std::string treeItemKey(const wxTreeItemId& item) const {
@@ -526,8 +552,44 @@ private:
         if (!activeTabIsReusableForOpen()) createDocumentTab(true);
     }
 
+#if defined(__EMSCRIPTEN__)
+    using BrowserImportCallback = std::function<void(neobrowser::BrowserImportLease)>;
+
+    void requestBrowserImport(const std::string& title,
+                              const std::string& accept,
+                              bool multiple,
+                              BrowserImportCallback callback) {
+        wxWeakRef<NeoGFFFrame> weakSelf(this);
+        neobrowser::requestOpenFilesOwned(
+            title, accept, multiple,
+            [weakSelf, callback = std::move(callback)](
+                neobrowser::OwnedOpenFilesResult result) mutable {
+                if (!weakSelf || weakSelf->IsBeingDeleted()) return;
+                auto* const frame = weakSelf.get();
+                if (!result.error.empty()) {
+                    wxMessageBox(wxui::toWx(result.error), "File Open Error",
+                                 wxOK | wxICON_ERROR, frame);
+                    return;
+                }
+                if (result.cancelled()) return;
+                callback(std::move(result.import));
+            });
+    }
+
+    static bool importOwnsPath(const neobrowser::BrowserImportLease& import,
+                               const std::filesystem::path& path) {
+        return std::find(import.paths().begin(), import.paths().end(), path) !=
+               import.paths().end();
+    }
+#endif
+
     bool confirmCloseDocumentTab(std::size_t index) {
         if (index >= documents_.size()) return true;
+        if (documents_[index].saveInProgress) {
+            wxui::showMessage(this, "Save in progress",
+                              "Finish the browser save transaction before closing this tab.");
+            return false;
+        }
         if (!tabDirty(documents_[index])) return true;
         return wxui::confirm(this, "Close tab", neotabs::closePromptText(tabDisplayName(documents_[index])));
     }
@@ -691,7 +753,7 @@ private:
         Bind(wxEVT_MENU, &NeoGFFFrame::onResetFontScale, this, ID_FontReset);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { Close(); }, wxID_EXIT);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) {
-            wxui::showMessage(this, "About NeoGFF", "NeoGFF v1.0.0\nNative wxWidgets BioWare GFF tree editor\n\nA special thanks to everyone in the KOTOR modding community that has contributed their work, knowledge, and creativity to making tools, mods, and guides over the last 20+ years");
+            wxui::showMessage(this, "About NeoGFF", std::string("NeoGFF v") + kVersion + "\nNative wxWidgets BioWare GFF tree editor\n\nA special thanks to everyone in the KOTOR modding community that has contributed their work, knowledge, and creativity to making tools, mods, and guides over the last 20+ years");
         }, wxID_ABOUT);
         Bind(wxEVT_BUTTON, &NeoGFFFrame::onNew, this, ID_New);
         Bind(wxEVT_BUTTON, &NeoGFFFrame::onOpen, this, ID_Open);
@@ -803,6 +865,10 @@ private:
         (void)checkDirty;
         ensureDocumentTabForOpen();
         model().load(path);
+        activeDocument().logicalFilename = path;
+#if defined(__EMSCRIPTEN__)
+        activeDocument().sourceImport.reset();
+#endif
         viewState().resetForNewDocument();
         viewState().preferredViewMode = "ElementTree";
         viewState().selectedLogicalRow = -1;
@@ -818,6 +884,16 @@ private:
         refreshAll();
         return true;
     }
+
+#if defined(__EMSCRIPTEN__)
+    bool openModelPath(const std::filesystem::path& path,
+                       neobrowser::BrowserImportLease import,
+                       bool checkDirty = true) {
+        if (!openModelPath(path, checkDirty)) return false;
+        activeDocument().sourceImport = std::move(import);
+        return true;
+    }
+#endif
 
     void onOpenRecent(wxCommandEvent& event) {
         const int index = event.GetId() - kRecentFileBaseId;
@@ -840,12 +916,29 @@ private:
         rebuildRecentFilesMenu();
     }
 
-    bool maybeSave() {
+    bool maybeSave(DeferredAction afterSave = {}) {
+#if !defined(__EMSCRIPTEN__)
+        (void)afterSave;
+#endif
+        if (activeDocument().saveInProgress || browserSaveActive_) return false;
         if (!model().loaded() || !model().dirty()) return true;
         const int result = wxMessageBox("The current GFF has unsaved changes. Save it?", "Unsaved Changes",
                                         wxYES_NO | wxCANCEL | wxICON_QUESTION, this);
         if (result == wxCANCEL) return false;
-        if (result == wxYES) return save(false);
+        if (result == wxYES) {
+#if defined(__EMSCRIPTEN__)
+            SaveCompletion completion;
+            if (afterSave) {
+                completion = [action = std::move(afterSave)](bool succeeded) mutable {
+                    if (succeeded && action) action();
+                };
+            }
+            (void)save(false, std::move(completion));
+            return false;
+#else
+            return save(false);
+#endif
+        }
         return true;
     }
 
@@ -855,6 +948,10 @@ private:
         try {
             createDocumentTab(true);
             model().newFile(*type);
+            activeDocument().logicalFilename.clear();
+#if defined(__EMSCRIPTEN__)
+            activeDocument().sourceImport.reset();
+#endif
             viewState().resetForNewDocument();
             viewState().preferredViewMode = "ElementTree";
             viewState().selectedLogicalRow = -1;
@@ -871,6 +968,22 @@ private:
     }
 
     void chooseAndOpenGff(const std::filesystem::path& initialDirectory = {}) {
+#if defined(__EMSCRIPTEN__)
+        (void)initialDirectory;
+        requestBrowserImport(
+            "Open GFF-backed resource",
+            wxui::detail::wildcardToBrowserAccept(gffWildcard()),
+            false,
+            [this](neobrowser::BrowserImportLease import) {
+                if (import.empty() || IsBeingDeleted()) return;
+                try {
+                    const std::filesystem::path selected = import.paths().front();
+                    openModelPath(selected, std::move(import), false);
+                } catch (const std::exception& ex) {
+                    wxui::showError(this, ex);
+                }
+            });
+#else
         auto file = wxui::chooseOpenFile(this, "Open GFF-backed resource", gffWildcard(), initialDirectory);
         if (!file) return;
         try {
@@ -878,23 +991,51 @@ private:
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
         }
+#endif
     }
 
     void onOpen(wxCommandEvent&) {
         chooseAndOpenGff();
     }
 
-    void onOpenTlk(wxCommandEvent&) {
-        auto file = wxui::chooseOpenFile(this, "Open optional TLK for resolved StrRef text", kTlkWildcard);
-        if (!file) return;
+    void loadTlkFromPath(const std::filesystem::path& file, bool rememberPath = true) {
         try {
-            model().loadTlk(*file);
-            writeCachedTlkPath(*file);
+            model().loadTlk(file);
+            if (rememberPath) writeCachedTlkPath(file);
+            else clearCachedTlkPath();
             tlkAutoLoadWarning().clear();
             refreshAll();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
         }
+    }
+
+    void onOpenTlk(wxCommandEvent&) {
+#if defined(__EMSCRIPTEN__)
+        if (!hasActiveDocument()) return;
+        wxWindow* const targetPage = activeDocument().tabPage;
+        requestBrowserImport(
+            "Open optional TLK for resolved StrRef text",
+            ".tlk",
+            false,
+            [this, targetPage](neobrowser::BrowserImportLease import) {
+                if (import.empty() || IsBeingDeleted()) return;
+                if (!hasActiveDocument() || activeDocument().tabPage != targetPage) {
+                    wxui::showMessage(
+                        this,
+                        "TLK Load Cancelled",
+                        "The active document changed while the TLK picker was open. Select the TLK again from the intended tab.");
+                    return;
+                }
+                // TlkLookup owns its decoded contents after load. The temporary
+                // browser import is released when this callback returns.
+                loadTlkFromPath(import.paths().front(), false);
+            });
+#else
+        auto file = wxui::chooseOpenFile(this, "Open optional TLK for resolved StrRef text", kTlkWildcard);
+        if (!file) return;
+        loadTlkFromPath(*file);
+#endif
     }
 
     void onClearTlk(wxCommandEvent&) {
@@ -905,6 +1046,12 @@ private:
     }
 
     void tryLoadCachedTlk() {
+#if defined(__EMSCRIPTEN__)
+        // Browser import paths are process-local and cannot be restored on a
+        // later page load.
+        clearCachedTlkPath();
+        return;
+#else
         const auto cached = readCachedTlkPath();
         if (!cached || cached->empty()) return;
         try {
@@ -917,6 +1064,7 @@ private:
         } catch (const std::exception& ex) {
             tlkAutoLoadWarning() = std::string("Unable to auto-load cached TLK: ") + ex.what();
         }
+#endif
     }
 
     void onSave(wxCommandEvent&) { (void)save(false); }
@@ -982,14 +1130,12 @@ private:
         event.Skip();
     }
 
-    void onImport(neotabular::Format format) {
+    void importFromPath(neotabular::Format format, const std::filesystem::path& chosen) {
         try {
-            const auto chosen = wxui::chooseOpenFile(this, "Import " + neotabular::formatName(format), tableWildcardForFormat(format));
-            if (!chosen) return;
             if (format == neotabular::Format::Xml) {
-                model().importXml(readTextFile(*chosen));
+                model().importXml(readTextFile(chosen));
             } else if (format == neotabular::Format::Json) {
-                model().importXml(gffJsonToXml(readTextFile(*chosen)));
+                model().importXml(gffJsonToXml(readTextFile(chosen)));
             } else {
                 throw std::invalid_argument("NeoGFF imports only semantic XML or JSON. CSV/TSV flattened import is not supported for GFF files.");
             }
@@ -1004,11 +1150,44 @@ private:
         }
     }
 
+    void onImport(neotabular::Format format) {
+#if defined(__EMSCRIPTEN__)
+        if (!hasActiveDocument()) return;
+        wxWindow* const targetPage = activeDocument().tabPage;
+        requestBrowserImport(
+            "Import " + neotabular::formatName(format),
+            format == neotabular::Format::Xml ? ".xml" : ".json",
+            false,
+            [this, targetPage, format](neobrowser::BrowserImportLease import) {
+                if (import.empty() || IsBeingDeleted()) return;
+                if (!hasActiveDocument() || activeDocument().tabPage != targetPage) {
+                    wxui::showMessage(
+                        this,
+                        "Import Cancelled",
+                        "The active document changed while the import picker was open. Start the import again from the intended tab.");
+                    return;
+                }
+                importFromPath(format, import.paths().front());
+            });
+#else
+        try {
+            const auto chosen = wxui::chooseOpenFile(
+                this,
+                "Import " + neotabular::formatName(format),
+                tableWildcardForFormat(format));
+            if (!chosen) return;
+            importFromPath(format, *chosen);
+        } catch (const std::exception& ex) {
+            wxui::showError(this, ex);
+        }
+#endif
+    }
+
     void onExport(neotabular::Format format) {
         if (!model().loaded()) return;
         try {
             const auto chosen = wxui::chooseSaveFile(this, "Export " + neotabular::formatName(format), tableWildcardForFormat(format),
-                                                   exportDefaultFilename(model().filename(), format, "gff"));
+                                                   exportDefaultFilename(documentFilename(activeDocument()), format, "gff"));
             if (!chosen) return;
             if (format == neotabular::Format::Xml || format == neotabular::Format::Json) {
                 if (neoview::hasAnyFilter(viewState())) {
@@ -1024,25 +1203,23 @@ private:
         }
     }
 
-    void onExportPatcher() {
-        if (!model().loaded()) return;
+    void exportPatcherFromOriginal(const std::filesystem::path& originalPath) {
         try {
             requireGenericGffPatcherModel(model(), "The active document");
-            const auto originalPath = wxui::chooseOpenFile(this, "Select clean/unmodified GFF3 baseline", gffWildcard());
-            if (!originalPath) return;
-
             GffModel original;
-            original.load(*originalPath);
+            original.load(originalPath);
             requireMatchingGffPatcherModels(original, model());
 
-            std::string defaultPatchName = model().filename().empty()
-                ? originalPath->filename().string()
-                : model().filename().filename().string();
+            const std::filesystem::path currentFilename = documentFilename(activeDocument());
+            std::string defaultPatchName = currentFilename.empty()
+                ? originalPath.filename().string()
+                : currentFilename.filename().string();
             if (defaultPatchName.empty()) defaultPatchName = "modified.gff";
-            const auto patchName = wxui::promptText(this,
-                                                    "Patch Target Filename",
-                                                    "GFF filename to patch in the user's install:",
-                                                    defaultPatchName);
+            const auto patchName = wxui::promptText(
+                this,
+                "Patch Target Filename",
+                "GFF filename to patch in the user's install:",
+                defaultPatchName);
             if (!patchName || patchName->empty()) return;
 
             const auto output = wxui::choosePatcherOutput(this);
@@ -1050,7 +1227,7 @@ private:
             const bool writeToIni = output->writesToIni();
 
             auto project = neotsl::diffGffFlatTable(
-                original.toTable(), model().toTable(), *patchName, writeToIni, *originalPath);
+                original.toTable(), model().toTable(), *patchName, writeToIni, originalPath);
             neotsl::throwIfUnsupported(project);
 
             if (!writeToIni) {
@@ -1070,6 +1247,40 @@ private:
                                                   : "Created the installer INI:\n") +
                     pathText(report.iniPath) +
                     "\n\nThe clean GFF baseline was staged beside the selected INI.");
+        } catch (const std::exception& ex) {
+            wxui::showError(this, ex);
+        }
+    }
+
+    void onExportPatcher() {
+        if (!model().loaded()) return;
+        try {
+            requireGenericGffPatcherModel(model(), "The active document");
+#if defined(__EMSCRIPTEN__)
+            wxWindow* const targetPage = activeDocument().tabPage;
+            requestBrowserImport(
+                "Select clean/unmodified GFF3 baseline",
+                wxui::detail::wildcardToBrowserAccept(gffWildcard()),
+                false,
+                [this, targetPage](neobrowser::BrowserImportLease import) {
+                    if (import.empty() || IsBeingDeleted()) return;
+                    if (!hasActiveDocument() || activeDocument().tabPage != targetPage) {
+                        wxui::showMessage(
+                            this,
+                            "Patcher Export Cancelled",
+                            "The active document changed while the baseline picker was open. Start the export again from the intended tab.");
+                        return;
+                    }
+                    exportPatcherFromOriginal(import.paths().front());
+                });
+#else
+            const auto originalPath = wxui::chooseOpenFile(
+                this,
+                "Select clean/unmodified GFF3 baseline",
+                gffWildcard());
+            if (!originalPath) return;
+            exportPatcherFromOriginal(*originalPath);
+#endif
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
         }
@@ -1106,10 +1317,12 @@ private:
         }
     }
 
-    bool save(bool saveAs) {
-        if (!model().loaded()) return false;
+    bool save(bool saveAs, SaveCompletion completion = {}) {
+        if (!model().loaded() || !hasActiveDocument()) return false;
+        if (activeDocument().saveInProgress || browserSaveActive_) return false;
         try {
-            std::filesystem::path target = model().filename();
+            DocumentTab& document = activeDocument();
+            std::filesystem::path target = documentFilename(document);
             if (saveAs || target.empty()) {
                 const std::string defaultName = target.empty()
                     ? std::string("new.") + preferredGffExtensionForType(model().fileType())
@@ -1119,13 +1332,98 @@ private:
                 if (!chosen) return false;
                 target = *chosen;
             }
-            model().save(target);
+
+            const bool wasDirty = document.model->dirty();
+            document.model->save(target);
+
+#if defined(__EMSCRIPTEN__)
+            document.saveInProgress = true;
+            browserSaveActive_ = true;
+            updateDocumentTabTitle(document);
+            refreshAll();
+            Enable(false);
+
+            wxWeakRef<NeoGFFFrame> weakSelf(this);
+            wxWindow* const targetPage = document.tabPage;
+            neobrowser::requestDownloadFile(
+                target,
+                target.filename().string(),
+                [weakSelf, targetPage, target, wasDirty,
+                 completion = std::move(completion)](
+                    neobrowser::DownloadResult result) mutable {
+                    if (!weakSelf || weakSelf->IsBeingDeleted()) return;
+                    auto* const frame = weakSelf.get();
+                    frame->browserSaveActive_ = false;
+                    frame->Enable(true);
+
+                    const std::size_t index = neotabs::findDocumentIndexForPage(
+                        frame->documents_, targetPage);
+                    if (index == neotabs::npos) return;
+
+                    DocumentTab& savedDocument = frame->documents_[index];
+                    savedDocument.saveInProgress = false;
+                    if (!result.error.empty() || result.cancelled()) {
+                        savedDocument.model->gff().dirty(wasDirty);
+                        frame->updateDocumentTabTitle(savedDocument);
+                        if (index == frame->activeDocumentIndex_) frame->refreshAll();
+                        const std::string message = result.error.empty()
+                            ? "The browser save transaction was cancelled."
+                            : result.error;
+                        wxMessageBox(wxui::toWx(message), "Save Failed",
+                                     wxOK | wxICON_ERROR, frame);
+                        if (completion) completion(false);
+                        return;
+                    }
+
+                    if (result.ready()) {
+                        savedDocument.model->gff().dirty(wasDirty);
+                        frame->updateDocumentTabTitle(savedDocument);
+                        if (index == frame->activeDocumentIndex_) frame->refreshAll();
+                        wxui::showMessage(
+                            frame,
+                            "Replacement download ready",
+                            "The browser could not overwrite the original host file directly. "
+                            "A replacement GFF resource is ready in the download panel. The document remains marked modified. "
+                            "Download the replacement, then repeat the navigation and explicitly discard the in-memory copy.");
+                        if (completion) completion(false);
+                        return;
+                    }
+
+                    if (!result.saved()) {
+                        savedDocument.model->gff().dirty(wasDirty);
+                        frame->updateDocumentTabTitle(savedDocument);
+                        if (index == frame->activeDocumentIndex_) frame->refreshAll();
+                        wxMessageBox(
+                            "The browser did not confirm that the GFF resource was written.",
+                            "Save Failed", wxOK | wxICON_ERROR, frame);
+                        if (completion) completion(false);
+                        return;
+                    }
+
+                    savedDocument.logicalFilename = target;
+                    savedDocument.model->gff().dirty(false);
+                    if (!frame->importOwnsPath(savedDocument.sourceImport, target)) {
+                        savedDocument.sourceImport.reset();
+                    }
+                    frame->rememberRecentFile(target);
+                    neogames::resolver().inferFromOpenedPath(target);
+                    frame->updateDocumentTabTitle(savedDocument);
+                    if (index == frame->activeDocumentIndex_) frame->refreshAll();
+                    if (completion) completion(true);
+                });
+            return true;
+#else
+            document.logicalFilename = target;
+            document.model->gff().dirty(false);
             rememberRecentFile(target);
             neogames::resolver().inferFromOpenedPath(target);
             refreshAll();
+            if (completion) completion(true);
             return true;
+#endif
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
+            if (completion) completion(false);
             return false;
         }
     }
@@ -1238,6 +1536,12 @@ private:
     }
 
     void onClose(wxCloseEvent& event) {
+        if (browserSaveActive_ && event.CanVeto()) {
+            wxui::showMessage(this, "Save in progress",
+                              "Finish the browser save transaction before closing NeoGFF.");
+            event.Veto();
+            return;
+        }
         if (event.CanVeto() && !confirmCloseAllTabs()) {
             event.Veto();
             return;
@@ -1338,8 +1642,9 @@ private:
         treeMaterializedPaths_.clear();
         tree_->DeleteAllItems();
 
+        const std::filesystem::path currentFilename = documentFilename(activeDocument());
         const std::string rootText = model().loaded()
-            ? (pathText(model().filename()).empty() ? std::string("New GFF File") : pathText(model().filename()))
+            ? (pathText(currentFilename).empty() ? std::string("New GFF File") : pathText(currentFilename))
             : std::string("No GFF loaded");
         const wxTreeItemId root = tree_->AddRoot(
             wxui::toWx(rootText), -1, -1, new GffTreeItemData(std::string{}, -1));
@@ -1464,7 +1769,8 @@ private:
             viewState(), std::move(visibleLogicalRows));
         neoview::ensureIdentityColumns(viewState(), kColumnCount);
 
-        filePath_->ChangeValue(wxui::toWx(pathText(model().filename())));
+        const std::filesystem::path currentFilename = documentFilename(activeDocument());
+        filePath_->ChangeValue(wxui::toWx(pathText(currentFilename)));
         typeText_->ChangeValue(wxui::toWx(typeVersionText(model())));
         if (tlkPath_) {
             tlkPath_->ChangeValue(wxui::toWx(
@@ -1474,8 +1780,9 @@ private:
         }
 
         SetTitle(wxui::toWx(
-            "NeoGFF v1.0.0" +
-            std::string(model().dirty() ? " *" : "") +
+            std::string("NeoGFF v") + kVersion +
+            std::string(activeDocument().saveInProgress ? " (saving...)" :
+                        (model().dirty() ? " *" : "")) +
             " (GFF editor)"));
         updateActiveTabTitle();
 
@@ -1486,7 +1793,7 @@ private:
                 *this,
                 wxui::toWx(
                     model().loaded()
-                        ? pathText(model().filename())
+                        ? pathText(currentFilename)
                         : std::string("No GFF loaded")),
                 0);
             std::string detail =
@@ -1544,6 +1851,7 @@ private:
     std::vector<DocumentTab> documents_;
     std::size_t activeDocumentIndex_ = neotabs::npos;
     bool tabSwitchInProgress_ = false;
+    bool browserSaveActive_ = false;
     std::vector<GffFieldRow> displayRows_;
     wxTextCtrl* filePath_ = nullptr;
     wxTextCtrl* typeText_ = nullptr;
@@ -1567,19 +1875,10 @@ private:
 class NeoGFFApp final : public wxApp {
 public:
     bool OnInit() override {
-        const bool smokeTest =
-            argc > 1 && wxString(argv[1]) == wxString::FromUTF8("--smoke-test");
-
         auto* frame = new NeoGFFFrame();
-        frame->Show(!smokeTest);
-        if (!smokeTest && argc > 1) {
+        frame->Show();
+        if (argc > 1) {
             frame->openStartupFile(neosettings::pathFromWx(wxString(argv[1])));
-        }
-        if (smokeTest) {
-            CallAfter([frame]() {
-                frame->Destroy();
-                if (wxTheApp != nullptr) wxTheApp->ExitMainLoop();
-            });
         }
         return true;
     }

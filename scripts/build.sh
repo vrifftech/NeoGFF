@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_NAME="$(basename "$ROOT_DIR")"
-PROJECT_PREFIX="$(printf '%s' "$PROJECT_NAME" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')"
+PROJECT_NAME="NeoGFF"
+PROJECT_PREFIX="NEOGFF"
 CMAKE_BIN="${CMAKE:-cmake}"
 BUILD_DIR="$ROOT_DIR/build"
 BUILD_TYPE="Release"
@@ -111,7 +111,7 @@ if [[ "$NO_VCPKG" == 0 && -n "$VCPKG_ROOT_VALUE" && -f "$VCPKG_ROOT_VALUE/script
   CONFIG_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT_VALUE/scripts/buildsystems/vcpkg.cmake")
   [[ -z "$VCPKG_TRIPLET" ]] || CONFIG_ARGS+=("-DVCPKG_TARGET_TRIPLET=$VCPKG_TRIPLET")
 fi
-CONFIG_ARGS+=("${EXTRA[@]}")
+CONFIG_ARGS+=("${EXTRA[@]+"${EXTRA[@]}"}")
 
 printf 'Configuring %s in %s\n' "$PROJECT_NAME" "$BUILD_DIR"
 "$CMAKE_BIN" "${CONFIG_ARGS[@]}"

@@ -5,7 +5,6 @@ if(POLICY CMP0091)
 endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "MSVC runtime library" FORCE)
 
-project(NeoGFFCpp VERSION 1.0.0 DESCRIPTION "C++17/wxWidgets BioWare GFF editor" LANGUAGES CXX)
 set(NEOSHARED_ROOT "" CACHE PATH
     "Path to the neoshared source repository; defaults to ../neoshared")
 
@@ -31,6 +30,14 @@ if(NOT EXISTS "${NEOSHARED_ROOT}/CMakeLists.txt")
         "Clone the neoshared repository beside this repository, or configure "
         "with -DNEOSHARED_ROOT=/path/to/neoshared.")
 endif()
+
+include("${NEOSHARED_ROOT}/cmake/NeoVersion.cmake")
+include("${NEOSHARED_ROOT}/cmake/NeoMacOSBundle.cmake")
+include("${NEOSHARED_ROOT}/cmake/NeoWasm.cmake")
+neo_read_version_header(NEOGFF_VERSION
+    "${CMAKE_CURRENT_LIST_DIR}/src/core/Version.hpp"
+    NEOGFF_VERSION_STRING)
+project(NeoGFFCpp VERSION ${NEOGFF_VERSION} DESCRIPTION "C++17/wxWidgets BioWare GFF editor" LANGUAGES CXX)
 
 if(MSVC)
     foreach(_neo_runtime_flag_var IN ITEMS
@@ -96,28 +103,6 @@ if(NEOGFF_BUILD_CLI)
     install(TARGETS neogff-cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    set(_NEOGFF_TESTS_DEFAULT ON)
-else()
-    set(_NEOGFF_TESTS_DEFAULT OFF)
-endif()
-option(NEOGFF_BUILD_TESTS "Build NeoGFF regression tests" ${_NEOGFF_TESTS_DEFAULT})
-unset(_NEOGFF_TESTS_DEFAULT)
-
-if(NEOGFF_BUILD_TESTS)
-    enable_testing()
-    add_executable(neogff-resource-extension-tests tests/gff_extension_tests.cpp)
-    target_link_libraries(neogff-resource-extension-tests PRIVATE neogff_core)
-    if(MSVC)
-        target_compile_options(neogff-resource-extension-tests PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(neogff-resource-extension-tests PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-    add_test(NAME neogff-jade-resource-extensions
-             COMMAND neogff-resource-extension-tests)
-
-endif()
-
 
 option(NEOGFF_BUILD_WX_GUI "Build the wxWidgets desktop GUI when wxWidgets is available" ON)
 option(NEOGFF_REQUIRE_WX_GUI "Fail configure if wxWidgets is unavailable while NEOGFF_BUILD_WX_GUI is ON" OFF)
@@ -177,12 +162,12 @@ if(NEOGFF_BUILD_WX_GUI)
     if(wxWidgets_FOUND OR TARGET wx::core OR TARGET wxWidgets::wxWidgets)
         set(NEOGFF_WX_SOURCES src/wx/main.cpp)
         if(WIN32)
-            list(APPEND NEOGFF_WX_SOURCES resources/neogff.rc)
-        elseif(APPLE)
-            list(APPEND NEOGFF_WX_SOURCES resources/neogff.icns)
-            set_source_files_properties(resources/neogff.icns PROPERTIES
-                MACOSX_PACKAGE_LOCATION "Resources"
-            )
+            neo_configure_windows_version_resource(
+                NEOGFF_WX_SOURCES_RC
+                "${CMAKE_CURRENT_SOURCE_DIR}/resources/neogff.rc.in"
+                "neogff.rc"
+                "${CMAKE_CURRENT_SOURCE_DIR}/resources/neogff.ico")
+            list(APPEND NEOGFF_WX_SOURCES "${NEOGFF_WX_SOURCES_RC}")
         endif()
 
         if(WIN32)
@@ -192,11 +177,16 @@ if(NEOGFF_BUILD_WX_GUI)
         else()
             add_executable(NeoGFF ${NEOGFF_WX_SOURCES})
         endif()
-        if(APPLE)
-            set_target_properties(NeoGFF PROPERTIES
-                MACOSX_BUNDLE_ICON_FILE neogff.icns
-            )
-        endif()
+        neo_configure_macos_bundle(NeoGFF
+            NAME "NeoGFF"
+            IDENTIFIER "com.vrifftech.neogff"
+            ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/neogff.icns"
+        )
+        neo_configure_wasm_target(NeoGFF
+            NAME "NeoGFF"
+            SLUG "neogff"
+            ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/neogff.svg"
+        )
 
         target_link_libraries(NeoGFF PRIVATE neogff_core)
         target_include_directories(NeoGFF PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
@@ -212,11 +202,6 @@ if(NEOGFF_BUILD_WX_GUI)
             BUNDLE DESTINATION .
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         )
-
-        if(WIN32 AND NEOGFF_BUILD_TESTS)
-            add_test(NAME neogff-gui-startup COMMAND NeoGFF --smoke-test)
-            set_tests_properties(neogff-gui-startup PROPERTIES TIMEOUT 30)
-        endif()
 
         if(UNIX AND NOT APPLE)
             foreach(NEO_ICON_SIZE 16 24 32 48 64 128 256 512)

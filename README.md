@@ -21,6 +21,7 @@ NeoGFF uses a single hierarchical **GFF Tree** rather than a flattened spreadshe
 - Add Field and Delete Selected use the currently selected structure, list, or field.
 - The filter searches paths, labels, types, stored values, and resolved TLK text.
 - **View > Expand GFF Tree** and **View > Collapse GFF Tree** control hierarchy expansion.
+- Each open document keeps its own expanded branches, selected field, filter text, and tree position when switching between tabs.
 
 
 ## Dragon Age GFF V4 support
@@ -127,11 +128,15 @@ neogff-cli diff-tslpatcher original.utc modified.utc tslpatchdata --package --fi
 neogff-cli diff-tslpatcher original.utc modified.utc gff_fragment.ini --fragment --filename edited.utc
 ```
 
+The GUI offers two output choices. **Write to INI** asks you to select or create an installer INI and merges the new `[GFFList]`, file-section, and `AddFieldN` instructions without overwriting unrelated content. **Fragment** opens a read-only preview and lets you copy the generated INI sections to the clipboard or save that exact text as a new INI file. It never merges into an existing INI and does not stage the clean baseline GFF. Use any `.ini` name for separate install options. The CLI retains file-based `--package`, `--fragment`, and `--ini install_full.ini` options.
+
+Colliding `FileN`/`AddFieldN` keys, generated helper-section names, `2DAMEMORY#` tokens, and `StrRef#` tokens are remapped automatically. Identical baseline assets are retained. A different existing payload with the same filename is rejected rather than overwritten.
+
 Editable scalar and localized-string changes become direct field assignments under `[GFFList]`. Added fields become `AddFieldN` sections. Deleted fields, type changes, and structural reorders are reported as unsupported by default.
 
-Patcher generation accepts imported modified-side GFF data: `--modified-format xml|json|gff|kotor|native|auto` or a known native GFF extension alias such as `gff`, `utc`, `dlg`, `jrl`, `qst2`, `sto`, `fsm`, `cwa`, `cre`, `pla`, or `trg`; `diff-tslpatcher-import` accepts the same formats. XML/JSON are full hierarchical GFF documents; native GFF files can also be compared directly.
+Patcher generation accepts XML, JSON, or native classic GFF V3.2 data for the common KotOR-style resource types supported by both original TSLPatcher and HoloPatcher 1.7. DLG resources must use NeoDLG. Jade Empire resources, `JadeStringRef`, Witcher GFF V3.3, and Dragon Age GFF4 are rejected from patcher export even though NeoGFF can edit them natively.
 
-Patcher export is limited to matching GFF V3 documents. Generic NeoGFF output rejects GFF V4 and native `DLG` files; use NeoDLG for dialogue-aware graph patching. The GUI provides package and fragment export commands under **Export**.
+Patcher export is limited to matching GFF V3 documents. Generic NeoGFF output rejects GFF V4 and native `DLG` files; use NeoDLG for dialogue-aware graph patching. The GUI provides one patcher export command under **Export**, followed by a **Write to INI** or **Fragment** choice.
 
 ## Shared game directories
 
@@ -142,3 +147,10 @@ The wxWidgets application exposes **File > Open Game Directory**. Its submenu li
 GitHub Actions checks out `vrifftech/neoshared` beside this repository, then builds the full wxWidgets application on Ubuntu 24.04 and Windows Server 2025 with Visual Studio 2026. Successful non-pull-request runs publish staged Linux and Windows artifacts.
 
 The shared dependency defaults to `neoshared/main`. Set the repository Actions variable `NEOSHARED_REF` to a release tag or commit SHA to pin normal CI builds. A manual workflow run can override the ref, and the workflow accepts the `neoshared-updated` repository-dispatch event for cross-repository compatibility checks.
+
+## Versioning
+
+The application version has one source of truth: `src/core/Version.hpp`.
+To release a new version, edit only the `NEOGFF_VERSION_STRING` value in that file. CMake's
+`PROJECT_VERSION`, GUI and CLI version strings, Windows executable version metadata, and macOS
+bundle version metadata are derived from it during configuration.
