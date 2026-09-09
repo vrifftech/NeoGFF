@@ -60,7 +60,7 @@ jobs:
             .neo-wasm-deps/wxwidgets-wasm
             .neo-wasm-deps/wxwidgets-wasm-build
             .neo-wasm-deps/neo-wasm-versions.env
-          key: wasm-${{ runner.os }}-${{ env.NEO_WASM_EMSCRIPTEN_VERSION }}-${{ env.NEO_WASM_WX_COMMIT }}-js-exceptions-v3-${{ hashFiles('neoshared/scripts/setup-wasm.sh', 'neoshared/scripts/build-wx-wasm.sh', 'neoshared/scripts/wasm-config-sub-wrapper.sh', 'neoshared/scripts/wasm-autom4te-wrapper.sh') }}
+          key: wasm-${{ runner.os }}-${{ env.NEO_WASM_EMSCRIPTEN_VERSION }}-${{ env.NEO_WASM_WX_COMMIT }}-js-exceptions-no-pthreads-v5-${{ hashFiles('neoshared/scripts/setup-wasm.sh', 'neoshared/scripts/build-wx-wasm.sh', 'neoshared/scripts/patch-wx-wasm-no-pthreads.py', 'neoshared/scripts/wasm-config-sub-wrapper.sh', 'neoshared/scripts/wasm-autom4te-wrapper.sh') }}
 
       - name: Build browser application
         working-directory: tool
