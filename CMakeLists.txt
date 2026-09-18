@@ -72,6 +72,12 @@ target_link_libraries(neogff_core INTERFACE neoshared::gff_app neoshared::tslpat
 target_compile_features(neogff_core INTERFACE cxx_std_17)
 if(NEOGFF_BUILD_CLI)
     add_executable(neogff-cli src/cli/main.cpp)
+    neo_add_windows_version_resource(neogff-cli
+        VERSION "${PROJECT_VERSION}"
+        PRODUCT_NAME "NeoGFF"
+        FILE_DESCRIPTION "NeoGFF command-line BioWare GFF editor"
+        INTERNAL_NAME "neogff-cli"
+        ORIGINAL_FILENAME "neogff-cli.exe")
     target_link_libraries(neogff-cli PRIVATE neogff_core)
     if(MSVC)
         target_compile_options(neogff-cli PRIVATE /W4 /permissive-)
@@ -156,21 +162,19 @@ if(NEOGFF_BUILD_WX_GUI OR NEOGFF_BUILD_WX_MODULE)
         if(NEOGFF_BUILD_WX_GUI)
         set(NEOGFF_WX_SOURCES src/wx/main.cpp)
         if(WIN32)
-            neo_configure_windows_version_resource(
-                NEOGFF_WX_SOURCES_RC
-                "${CMAKE_CURRENT_SOURCE_DIR}/resources/neogff.rc.in"
-                "neogff.rc"
-                "${CMAKE_CURRENT_SOURCE_DIR}/resources/neogff.ico")
-            list(APPEND NEOGFF_WX_SOURCES "${NEOGFF_WX_SOURCES_RC}")
-        endif()
-
-        if(WIN32)
             add_executable(NeoGFF WIN32 ${NEOGFF_WX_SOURCES})
         elseif(APPLE)
             add_executable(NeoGFF MACOSX_BUNDLE ${NEOGFF_WX_SOURCES})
         else()
             add_executable(NeoGFF ${NEOGFF_WX_SOURCES})
         endif()
+        neo_add_windows_version_resource(NeoGFF
+            VERSION "${PROJECT_VERSION}"
+            PRODUCT_NAME "NeoGFF"
+            FILE_DESCRIPTION "NeoGFF BioWare GFF editor"
+            INTERNAL_NAME "NeoGFF"
+            ORIGINAL_FILENAME "NeoGFF.exe"
+            ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/neogff.ico")
         neo_configure_macos_bundle(NeoGFF
             NAME "NeoGFF"
             IDENTIFIER "com.vrifftech.neogff"
