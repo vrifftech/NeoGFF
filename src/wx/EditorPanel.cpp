@@ -915,12 +915,19 @@ private:
     }
 
     void tryLoadResolvedTlkForPath(const std::filesystem::path& path) {
-        if (model().tlk().loaded()) return;
-        const auto tlk = neogames::resolver().bestTlkForPath(path);
-        if (!tlk || tlk->empty()) return;
+        const auto resolution = neogames::resolver().resolveContext(path);
+        if (resolution.tlkPath.empty()) {
+            if (resolution.ambiguous) tlkAutoLoadWarning() = resolution.diagnostic;
+            return;
+        }
+        if (model().tlk().loaded() &&
+            neosettings::samePathForMru(model().tlk().filename(), resolution.tlkPath)) {
+            tlkAutoLoadWarning().clear();
+            return;
+        }
         try {
-            model().loadTlk(*tlk);
-            writeCachedTlkPath(*tlk);
+            model().loadTlk(resolution.tlkPath);
+            writeCachedTlkPath(resolution.tlkPath);
             tlkAutoLoadWarning().clear();
         } catch (const std::exception& ex) {
             tlkAutoLoadWarning() = std::string("Unable to auto-load resolved TLK: ") + ex.what();

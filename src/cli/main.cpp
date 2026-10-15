@@ -29,7 +29,7 @@ void usage(std::ostream& out) {
         << "  neogff-cli dump <gff> [filter-term] [--tlk dialog.tlk]\n"
         << "  neogff-cli search <gff> <term> [--tlk dialog.tlk]\n"
         << "  neogff-cli export <gff> <xml|json> <output>\n"
-        << "  neogff-cli import <input-gff> <output-gff> <xml|json> <input-document>\n"
+        << "  neogff-cli import <output-gff> <xml|json> <input-document>\n"
         << "  neogff-cli diff-tslpatcher <original-gff> <modified-input> <output-dir|fragment.ini> [--modified-format xml|json|gff|kotor|native|auto] [--package|--fragment] [--filename name] [--ini installer.ini] [--allow-unsupported]\n"
         << "  neogff-cli diff-tslpatcher-import <original-gff> <modified-input> <xml|json|gff|kotor|native|auto> <output-dir|fragment.ini> [--package|--fragment] [--filename name] [--ini installer.ini] [--allow-unsupported]\n"
         << "  neogff-cli roundtrip <input-gff> <output-gff>\n"
@@ -359,17 +359,17 @@ int main(int argc, char** argv) {
         }
 
         if (command == "import") {
-            if (argc != 6) { usage(std::cerr); return 2; }
-            const auto format = neotabular::parseFormat(argv[4]);
+            if (argc != 5) { usage(std::cerr); return 2; }
+            const auto format = neotabular::parseFormat(argv[3]);
             GffModel model;
             if (format == neotabular::Format::Xml) {
-                model.importXml(readTextFile(argv[5]));
+                model.importXml(readTextFile(argv[4]));
             } else if (format == neotabular::Format::Json) {
-                model.importXml(neogff::gffJsonToXml(readTextFile(argv[5])));
+                model.importXml(neogff::gffJsonToXml(readTextFile(argv[4])));
             } else {
                 throw std::invalid_argument("NeoGFF imports only semantic XML or JSON. CSV/TSV flattened import is not supported for GFF files.");
             }
-            model.save(argv[3]);
+            model.save(argv[2]);
             return 0;
         }
 
