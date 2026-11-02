@@ -400,8 +400,8 @@ private:
 
 class NeoGFFPanelImpl final : public neogff::ui::GFFEditorPanel {
 public:
-    NeoGFFPanelImpl(wxWindow* parent, neomodules::Context context)
-        : GFFEditorPanel(parent, std::move(context)) {
+    NeoGFFPanelImpl(wxWindow* parent, neomodules::Context context, bool managedDocuments)
+        : GFFEditorPanel(parent, std::move(context)), managedDocuments_(managedDocuments) {
         buildMenus();
         buildWindow();
         createModuleStatusBar(2);
@@ -426,7 +426,28 @@ public:
     std::size_t documentCount() const override { return documents_.size(); }
     bool openFile(const std::filesystem::path& path) override { return openModelPath(path, false); }
     neogff::GffModel* activeModel() override { return hasActiveDocument() ? &model() : nullptr; }
-    void refreshActiveDocument() override { if (hasActiveDocument()) refreshAll(); }
+    std::string activeResourceIdentity() const override { return activeDocument().resourceIdentity; }
+    void selectField(const std::string& path) override {
+        viewState().filterTerm.clear();
+        filterText_->ChangeValue("");
+        refreshAll();
+        const auto item=ensureTreeItemForKey(path);
+        tree_->SelectItem(item);
+        tree_->EnsureVisible(item);
+    }
+    void clearDocuments() override {
+        tabSwitchInProgress_=true;
+        documentTabs_->DeleteAllPages();
+        documents_.clear();
+        activeDocumentIndex_=neotabs::npos;
+        treeRenderedDocumentPage_=nullptr;
+        tabSwitchInProgress_=false;
+        createDocumentTab(true);
+    }
+    void refreshActiveDocument() override {
+        for (auto& document:documents_) updateDocumentTabTitle(document);
+        if (hasActiveDocument()) refreshAll();
+    }
     void setAppearance(bool dark, double scale) override { darkMode_=dark; fontScale_=scale; applyDarkMode(); }
     bool canClose() override {
         if (browserSaveActive_) return false;
@@ -469,6 +490,7 @@ public:
         }
         refreshAll();
         setModuleStatusText("Archive snapshot: " + document.sourceDescription + ". Save As creates a separate working file.");
+        documentSelected();
         return true;
     }
     bool saveActiveAs(const std::filesystem::path& path) override {
@@ -478,6 +500,18 @@ public:
     }
 
 private:
+    void documentSelected() {
+        wxCommandEvent event(neogff::ui::EVT_GFF_DOCUMENT_SELECTED,GetId());
+        event.SetEventObject(this);ProcessWindowEvent(event);
+    }
+    void documentEdited() {
+        refreshAll();
+        wxCommandEvent event(neogff::ui::EVT_GFF_DOCUMENT_EDITED,GetId());
+        event.SetEventObject(this);
+        event.SetString(wxui::toWx(activeDocument().resourceIdentity));
+        ProcessWindowEvent(event);
+    }
+
     void checkOutput(const std::filesystem::path& path, bool exporting = false) const {
         validateHostOutput(path);
         for (const auto& document : documents_) {
@@ -580,9 +614,10 @@ private:
             filterText_->ChangeValue(wxui::toWx(viewState().filterTerm));
         }
         refreshAll();
+        documentSelected();
     }
 
-    void createDocumentTab(bool select = true) {
+    void createDocumentTab(bool select = true, bool notify = true) {
         if (select && hasActiveDocument()) captureRenderedTreeState();
         DocumentTab tab;
         tab.model = std::make_unique<GffModel>();
@@ -611,6 +646,7 @@ private:
             neotabs::changeSelectionToPage(documentTabs_, page);
             tabSwitchInProgress_ = false;
             refreshAll();
+            if (notify) documentSelected();
         }
     }
 
@@ -619,8 +655,8 @@ private:
     }
 
     void ensureDocumentTabForOpen() {
-        if (!hasActiveDocument()) { createDocumentTab(true); return; }
-        if (!activeTabIsReusableForOpen()) createDocumentTab(true);
+        if (!hasActiveDocument()) { createDocumentTab(true, false); return; }
+        if (!activeTabIsReusableForOpen()) createDocumentTab(true, false);
     }
 
 #if defined(__EMSCRIPTEN__)
@@ -835,7 +871,8 @@ private:
         auto* root = new wxBoxSizer(wxVERTICAL);
 
         documentTabs_ = new wxAuiNotebook(panel, ID_DocumentTabs, wxDefaultPosition, wxDefaultSize,
-                                          wxAUI_NB_TOP | wxAUI_NB_TAB_MOVE | wxAUI_NB_CLOSE_ON_ACTIVE_TAB | wxAUI_NB_SCROLL_BUTTONS);
+                                          wxAUI_NB_TOP | wxAUI_NB_TAB_MOVE | wxAUI_NB_SCROLL_BUTTONS |
+                                              (managedDocuments_ ? 0 : wxAUI_NB_CLOSE_ON_ACTIVE_TAB));
         root->Add(documentTabs_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
         neotabs::configureDocumentTabStrip(documentTabs_);
 
@@ -846,10 +883,12 @@ private:
         fileRow->Add(new wxStaticText(panel, wxID_ANY, "File:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
         filePath_ = new wxTextCtrl(panel, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
         fileRow->Add(filePath_, 1, wxEXPAND | wxRIGHT, 8);
-        fileRow->Add(new wxButton(panel, ID_New, "New"), 0, wxRIGHT, 4);
-        fileRow->Add(new wxButton(panel, ID_Open, "Open..."), 0, wxRIGHT, 4);
-        fileRow->Add(new wxButton(panel, ID_Save, "Save"), 0, wxRIGHT, 4);
-        fileRow->Add(new wxButton(panel, ID_SaveAs, "Save As..."), 0);
+        if (!managedDocuments_) {
+            fileRow->Add(new wxButton(panel, ID_New, "New"), 0, wxRIGHT, 4);
+            fileRow->Add(new wxButton(panel, ID_Open, "Open..."), 0, wxRIGHT, 4);
+            fileRow->Add(new wxButton(panel, ID_Save, "Save"), 0, wxRIGHT, 4);
+            fileRow->Add(new wxButton(panel, ID_SaveAs, "Save As..."), 0);
+        }
         header->Add(fileRow, 0, wxEXPAND | wxBOTTOM, 6);
 
         auto* infoRow = new wxBoxSizer(wxHORIZONTAL);
@@ -967,6 +1006,7 @@ private:
         rememberRecentFile(path);
         neogames::resolver().inferFromOpenedPath(path);
         refreshAll();
+        documentSelected();
         return true;
     }
 
@@ -1031,7 +1071,7 @@ private:
         auto type = wxui::promptText(this, "New GFF", "GFF file type:", "UTC");
         if (!type) return;
         try {
-            createDocumentTab(true);
+            createDocumentTab(true, false);
             model().newFile(*type);
             activeDocument().logicalFilename.clear();
 #if defined(__EMSCRIPTEN__)
@@ -1047,6 +1087,7 @@ private:
                 filterText_->ChangeValue(wxString{});
             }
             refreshAll();
+            documentSelected();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
         }
@@ -1140,10 +1181,6 @@ private:
         const auto cached = readCachedTlkPath();
         if (!cached || cached->empty()) return;
         try {
-            if (!std::filesystem::exists(*cached)) {
-                tlkAutoLoadWarning() = "Cached TLK not found: " + cached->string();
-                return;
-            }
             model().loadTlk(*cached);
             tlkAutoLoadWarning().clear();
         } catch (const std::exception& ex) {
@@ -1211,7 +1248,13 @@ private:
     }
 
     void onTreeSelectionChanged(wxTreeEvent& event) {
-        if (!treeRefreshInProgress_) updateSelectionStateFromTreeItem(event.GetItem());
+        if (!treeRefreshInProgress_) {
+            updateSelectionStateFromTreeItem(event.GetItem());
+            wxCommandEvent selected(neogff::ui::EVT_GFF_FIELD_SELECTED,GetId());
+            selected.SetEventObject(this);
+            selected.SetString(wxui::toWx(viewState().selectedPath));
+            ProcessWindowEvent(selected);
+        }
         event.Skip();
     }
 
@@ -1229,7 +1272,7 @@ private:
             activeDocument().treeState.reset();
             if (treeRenderedDocumentPage_ == activeDocument().tabPage) treeRenderedDocumentPage_ = nullptr;
             if (filterText_) filterText_->ChangeValue("");
-            refreshAll();
+            documentEdited();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
         }
@@ -1396,7 +1439,7 @@ private:
         if (!selected.editable) return;
         try {
             model().setValue(selected.path, wxui::toStd(data.GetText()));
-            refreshAll();
+            documentEdited();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
             refreshAll();
@@ -1539,7 +1582,7 @@ private:
         if (dialog.ShowModal() != wxID_OK) return;
         try {
             model().addField(dialog.parentPath(), dialog.label(), dialog.type(), dialog.value(), dialog.structTypeId());
-            refreshAll();
+            documentEdited();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
         }
@@ -1553,7 +1596,7 @@ private:
         if (!wxui::confirm(this, "Delete Field", "Delete selected field?\n" + path)) return;
         try {
             model().deleteField(path);
-            refreshAll();
+            documentEdited();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
         }
@@ -1583,7 +1626,7 @@ private:
         if (!value) return;
         try {
             model().setValue(row.path, *value);
-            refreshAll();
+            documentEdited();
         } catch (const std::exception& ex) {
             wxui::showError(this, ex);
             refreshAll();
@@ -1945,13 +1988,17 @@ private:
     neoview::FontScaleWheelFilter fontScaleWheelFilter_;
     double fontScale_ = neoview::kDefaultFontScale;
     bool darkMode_ = false;
+    bool managedDocuments_;
 };
 
 
 } // namespace
 
 namespace neogff::ui {
-GFFEditorPanel* createEditorPanel(wxWindow* parent, neomodules::Context context) {
-    return new NeoGFFPanelImpl(parent, std::move(context));
+wxDEFINE_EVENT(EVT_GFF_DOCUMENT_EDITED, wxCommandEvent);
+wxDEFINE_EVENT(EVT_GFF_DOCUMENT_SELECTED, wxCommandEvent);
+wxDEFINE_EVENT(EVT_GFF_FIELD_SELECTED, wxCommandEvent);
+GFFEditorPanel* createEditorPanel(wxWindow* parent, neomodules::Context context, bool managedDocuments) {
+    return new NeoGFFPanelImpl(parent, std::move(context), managedDocuments);
 }
 }
