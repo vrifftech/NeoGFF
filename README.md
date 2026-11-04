@@ -5,6 +5,11 @@
 NeoGFF is a BioWare GFF editor. It edits classic GFF V3.2 files used by Neverwinter Nights, Neverwinter Nights 2, KotOR, KotOR II, Jade Empire, Dragon Age: Origins, and related games, plus The Witcher GFF V3.3 variant. Recognized classic resources include `.gff`, `.utc`, `.utd`, `.ute`, `.uti`, `.utm`, `.utp`, `.uts`, `.utt`, `.utw`, `.cam`, `.uta`, `.utx`, `.mmd`, `.jrl`, `.dlg`, `.are`, `.git`, `.gic`, `.ifo`, `.pth`, `.fac`, `.gui`, `.sto`, `.cwa`, `.fsm`, `.qst`, `.qst2`, `.itp`, `.bic`, `.btc`, `.bti`, `.btp`, `.btt`, `.cre`, `.pla`, `.trg`, `.cwd`, and `.sav`. It also opens Dragon Age `GFF V4.0PC` / `GFF V4.1PC` files, including `G2DA`/`.gda`, conversations and stages such as `.dlg`, `.cnv`, and `.stg`, cutscenes (`.cut`), plot tables (`.plo`), and morph/path/model/area resources such as `.mor`, `.mop`, `.ani`, `.evt`, `.cl`, `.gad`, `.pwk`, `.mmh`, `.arl`, `.rml`, `.anb`, `.tnt`, and GFF4 `.tlk` resources.
 
 
+Support is offered in the OpenKotOR Discord.
+
+[![OpenKotOR Discord](https://discordapp.com/api/guilds/739590575359262792/widget.png?style=banner2)](https://discord.gg/OpenKotOR)
+
+
 ## GUI view
 
 NeoGFF uses a single hierarchical **GFF Tree**
