@@ -464,7 +464,7 @@ public:
     bool openResource(neoshared::ResourceDocument input) override {
         if (activateResource(input.identity)) return true;
         auto candidate = std::make_unique<GffModel>();
-        neoshared::loadGffResource(input, candidate->gff(), {});
+        neoshared::loadGffResource(input, *candidate, {});
         // Parse before creating/replacing a tab, so a failed load leaves the UI intact.
         ensureDocumentTabForOpen();
         auto& document = activeDocument();
