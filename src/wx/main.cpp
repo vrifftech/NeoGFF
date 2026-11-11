@@ -37,7 +37,7 @@ private:
 };
 class NeoGFFApp final:public wxApp {
 public:bool OnInit()override {
-    SetAppName("NeoGFF");SetVendorName("Neo Tools");wxInitAllImageHandlers();
+    SetAppName("NeoGFF");SetVendorName("Neo Tools");wxui::initializeTheme("NeoGFF");wxInitAllImageHandlers();
     auto* frame=new NeoGFFFrame;frame->Show();
     if(argc>1){const auto path=neosettings::pathFromWx(wxString(argv[1]));frame->CallAfter([frame,path]{frame->openStartup(path);});}
     return true;
