@@ -78,7 +78,3 @@ Editable scalar and localized-string changes become direct field assignments und
 Patcher generation accepts XML, JSON, or native classic GFF V3.2 data for the common KotOR-style resource types supported by both original TSLPatcher and HoloPatcher 1.7. DLG resources must use NeoDLG. Jade Empire resources, `JadeStringRef`, Witcher GFF V3.3, and Dragon Age GFF4 are rejected from patcher export even though NeoGFF can edit them natively.
 
 Patcher export is limited to matching GFF V3 documents. Generic NeoGFF output rejects GFF V4 and native `DLG` files; use NeoDLG for dialogue-aware graph patching. The GUI provides one patcher export command under **Export**, followed by a **Write to INI** or **Fragment** choice.
-
-## Shared game directories
-
-The wxWidgets application exposes **File > Open Game Directory**. Its submenu lists every saved game install from the shared `neoshared` settings store; selecting an entry opens this application's supported-file dialog with that installation as the starting folder. **Manage Game Directories...** adds, renames, rescans, activates, or removes shared entries, and changes are visible in every Neo tool.
