@@ -186,6 +186,7 @@ if(NEOGFF_BUILD_WX_GUI OR NEOGFF_BUILD_WX_MODULE)
             ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/neogff.svg"
         )
 
+        neo_enable_updates(NeoGFF "NeoGFF" "${PROJECT_VERSION}")
         target_link_libraries(NeoGFF PRIVATE neogff_wx)
         target_include_directories(NeoGFF PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
         target_link_libraries(NeoGFF PRIVATE neoshared::wx)
