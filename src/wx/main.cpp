@@ -40,7 +40,7 @@ class NeoGFFApp final:public wxApp {
 public:bool OnInit()override {
     SetAppName("NeoGFF");SetVendorName("Neo Tools");wxui::initializeTheme("NeoGFF");wxInitAllImageHandlers();
     auto* frame=new NeoGFFFrame;frame->Show();
-#if !defined(__EMSCRIPTEN__)
+#if defined(NEO_UPDATE_APPLICATION)
         neoupdate::install(*frame, NEO_UPDATE_APPLICATION, NEO_UPDATE_VERSION);
 #endif
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#define NEOGFF_VERSION_STRING "1.0.6"
+#define NEOGFF_VERSION_STRING "1.0.7"
 
 namespace neogff {
 
