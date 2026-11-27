@@ -424,8 +424,14 @@ public:
         return false;
     }
     std::size_t documentCount() const override { return documents_.size(); }
+    wxWindow* moveDocumentTabs(wxWindow* parent) override {
+        documentTabs_->GetContainingSizer()->Detach(documentTabs_);
+        documentTabs_->Reparent(parent);
+        return documentTabs_;
+    }
     bool openFile(const std::filesystem::path& path) override { return openModelPath(path, false); }
     neogff::GffModel* activeModel() override { return hasActiveDocument() ? &model() : nullptr; }
+    std::filesystem::path activeFilename() const override { return documentFilename(activeDocument()); }
     std::string activeResourceIdentity() const override { return activeDocument().resourceIdentity; }
     void selectField(const std::string& path) override {
         viewState().filterTerm.clear();
@@ -500,6 +506,10 @@ public:
     }
 
 private:
+    void documentChanging() {
+        wxCommandEvent event(neogff::ui::EVT_GFF_DOCUMENT_CHANGING,GetId());
+        event.SetEventObject(this);ProcessWindowEvent(event);
+    }
     void documentSelected() {
         wxCommandEvent event(neogff::ui::EVT_GFF_DOCUMENT_SELECTED,GetId());
         event.SetEventObject(this);ProcessWindowEvent(event);
@@ -604,6 +614,7 @@ private:
 
     void selectDocumentTab(std::size_t index) {
         if (documentTabs_ == nullptr || index >= documents_.size()) return;
+        if (hasActiveDocument() && index != activeDocumentIndex_) documentChanging();
         if (hasActiveDocument() && index != activeDocumentIndex_) captureRenderedTreeState();
         tabSwitchInProgress_ = true;
         const bool selected = neotabs::changeSelectionToPage(documentTabs_, documents_[index].tabPage);
@@ -618,6 +629,7 @@ private:
     }
 
     void createDocumentTab(bool select = true, bool notify = true) {
+        if (select && hasActiveDocument()) documentChanging();
         if (select && hasActiveDocument()) captureRenderedTreeState();
         DocumentTab tab;
         tab.model = std::make_unique<GffModel>();
@@ -692,6 +704,7 @@ private:
 
     bool confirmCloseDocumentTab(std::size_t index) {
         if (index >= documents_.size()) return true;
+        if (index == activeDocumentIndex_) documentChanging();
         if (documents_[index].saveInProgress) {
             wxui::showMessage(this, "Save in progress",
                               "Finish the browser save transaction before closing this tab.");
@@ -1533,6 +1546,8 @@ private:
                     }
 
                     savedDocument.logicalFilename = target;
+                    savedDocument.resourceIdentity.clear();
+                    savedDocument.sourceDescription.clear();
                     savedDocument.model->gff().dirty(false);
                     if (!frame->importOwnsPath(savedDocument.sourceImport, target)) {
                         savedDocument.sourceImport.reset();
@@ -1540,16 +1555,19 @@ private:
                     frame->rememberRecentFile(target);
                     neogames::resolver().inferFromOpenedPath(target);
                     frame->updateDocumentTabTitle(savedDocument);
-                    if (index == frame->activeDocumentIndex_) frame->refreshAll();
+                    if (index == frame->activeDocumentIndex_) { frame->refreshAll(); frame->documentSelected(); }
                     if (completion) completion(true);
                 });
             return true;
 #else
             document.logicalFilename = target;
+            document.resourceIdentity.clear();
+            document.sourceDescription.clear();
             document.model->gff().dirty(false);
             rememberRecentFile(target);
             neogames::resolver().inferFromOpenedPath(target);
             refreshAll();
+            documentSelected();
             if (completion) completion(true);
             return true;
 #endif
@@ -1997,6 +2015,7 @@ private:
 namespace neogff::ui {
 wxDEFINE_EVENT(EVT_GFF_DOCUMENT_EDITED, wxCommandEvent);
 wxDEFINE_EVENT(EVT_GFF_DOCUMENT_SELECTED, wxCommandEvent);
+wxDEFINE_EVENT(EVT_GFF_DOCUMENT_CHANGING, wxCommandEvent);
 wxDEFINE_EVENT(EVT_GFF_FIELD_SELECTED, wxCommandEvent);
 GFFEditorPanel* createEditorPanel(wxWindow* parent, neomodules::Context context, bool managedDocuments) {
     return new NeoGFFPanelImpl(parent, std::move(context), managedDocuments);
