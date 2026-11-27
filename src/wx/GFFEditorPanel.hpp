@@ -5,14 +5,15 @@
 namespace neogff::ui {
 inline constexpr unsigned kEditorApiVersion=4;
 wxDECLARE_EVENT(EVT_GFF_DOCUMENT_EDITED, wxCommandEvent);
-wxDECLARE_EVENT(EVT_GFF_DOCUMENT_CHANGING, wxCommandEvent);
+wxDECLARE_EVENT(EVT_GFF_DOCUMENT_CHANGING, wxNotifyEvent);
 wxDECLARE_EVENT(EVT_GFF_DOCUMENT_SELECTED, wxCommandEvent);
 wxDECLARE_EVENT(EVT_GFF_FIELD_SELECTED, wxCommandEvent);
 class GFFEditorPanel : public neomodules::Panel {
 public:
     using Panel::Panel;
     virtual bool openFile(const std::filesystem::path& path)=0;
-    virtual bool openResource(neoshared::ResourceDocument resource)=0;
+    virtual neoshared::ResourceResolverFactory resourceResolverFactory() const=0;
+    virtual bool openResource(neoshared::ResourceDocument resource,neoshared::ResourceResolverFactory resources={})=0;
     virtual bool saveActiveAs(const std::filesystem::path& path)=0;
     virtual bool activateResource(const std::string& identity)=0;
     virtual std::size_t documentCount() const=0;
